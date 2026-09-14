@@ -43,12 +43,17 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   handed them, because past the interpreter's recursion budget `jsonschema` cannot
   build even its own message.
 
-  Two limits are recorded rather than closed: the rendered-width bound is
-  unreachable over the shipped transport, which answers `413` at 4 MiB first
-  ([#669](https://github.com/theurian/theurian/issues/669)), and the shared
-  context's `snapshotId`, `agentId` and `taskId` are now admitted by the enforced
-  contract while no handler reads them
-  ([#665](https://github.com/theurian/theurian/issues/665)).
+  One limit is recorded rather than closed: the shared context's `snapshotId`,
+  `agentId` and `taskId` are now admitted by the enforced contract while no
+  handler reads them
+  ([#665](https://github.com/theurian/theurian/issues/665)). A second was
+  recorded when this entry was written — the rendered-width bound was
+  unreachable over the shipped transport, which answered `413` at the SDK's
+  unrecorded 4 MiB default first
+  ([#669](https://github.com/theurian/theurian/issues/669)) — and it is
+  **resolved in this same release**: both limits are now recorded constants and
+  the relationship between them is driven, under *the daemon chooses and records
+  the request body cap it reads* below.
 
 ### Changed
 
@@ -93,6 +98,82 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   default change, not a protocol change: `protocolVersion` is untouched. A
   temporary-directory harness that drives `migrate apply` must now commit its
   migration first, or pass the flag.
+- **The daemon chooses and records the request body cap it reads, and a caller
+  may now send a larger body**
+  ([#669](https://github.com/theurian/theurian/issues/669),
+  [ADR-0031](../../docs/adr/0031-mcp-input-is-schema-validated-in-middleware.md)
+  *Amendment 1*). Old shape: `build_app` called the SDK's `streamable_http_app`
+  without `max_request_body_size`, so the SDK's own 4 MiB
+  `DEFAULT_MAX_REQUEST_BODY_SIZE` answered `413 Request body too large` before
+  any MCP framing existed — a bound this project never chose and never recorded,
+  and one that refused the 8 MiB write-intent body ADR-0032 sizes for without
+  naming a tool or a remedy. New shape: the daemon passes
+  `MAX_REQUEST_BODY_BYTES`, **26,214,400 bytes**, derived as
+  `3 * MAX_SOURCE_FILE_BYTES + 1 MiB`, where the multiplier is the worst ratio
+  of wire bytes to landed UTF-8 bytes any non-control text reaches — enumerated
+  per UTF-8 byte length under both encoder families, not sampled from scripts
+  someone judged realistic. **Caller-visible**: a body up to that size now
+  arrives, is framed, and is answered by its schema or by the daemon's own
+  bounded refusal naming the tool and the limit it passed, where anything past
+  4 MiB previously met the bare `413`; a body landing at ADR-0032's file cap now
+  arrives in every script class, where 2-byte-script text (Greek, Cyrillic,
+  Hebrew, Arabic) expands 3.0x on the wire and used to meet that `413`. Not a
+  protocol change — `protocolVersion` is untouched — and not a widening of what
+  is *validated*: the schema tier's own bounds are unchanged. Two costs are
+  recorded on the constant rather than left to be discovered. The first is
+  per-request memory, and it is **neither a single multiple of the wire bytes nor
+  a function of the body alone**: up to three terms are live — the transport's
+  buffers at 2x, the parse's peak at 1x/3x/5x by the body's widest code point
+  (measured over single-large-leaf bodies; many small values pay a per-object
+  overhead instead, bounded absolutely by `MAX_PARAMS_NODES`), and, on refusal
+  paths only, the second string `jsonschema` renders to build its message, at the
+  width of the `repr` *output* rather than the parsed string's. The peak is the
+  **maximum of the parse moment and the render moment** rather than their sum,
+  and the recorded expression is an **upper bound**: tight for the shapes it is
+  pinned over, over-predicting on non-printable-wide bodies, never under. A
+  charge-refused body at the cap measures
+  3.00x (75.1 MiB, `tracemalloc`) all-ASCII up to 7.00x (175.1 MiB) with one
+  astral character; a body that instead reaches `jsonschema` measures worse on
+  both axes — **114.1 MiB at 38.04x** on only 3,145,848 wire bytes, and
+  ~194–200 MiB (up to 8.00x) at the cap. And two encodings still meet the
+  `413` at a landed size the store would accept — C0 controls other than `\b`
+  `\t` `\n` `\f` `\r`, which have no remedy because raw C0 is illegal JSON, and
+  DEL (U+007F), which has one: send it raw instead of `ensure_ascii`-escaped.
+
+### Fixed
+
+- **The MCP boundary charges every leaf at least the number of characters that
+  leaf contributes to the render, rather than a string's own length**
+  ([#669](https://github.com/theurian/theurian/issues/669), SEC-12).
+  `MAX_PARAMS_RENDERED_CHARS` (12 MiB) bounds how much render work `jsonschema`
+  may be asked to do, and `jsonschema` renders a failing instance with
+  `{instance!r}` — which escapes. The charge counted a string's own length, so a
+  leaf was charged one character for up to ten that `repr` renders: a raw U+007F
+  costs one wire byte and four rendered characters, a raw U+0600 two bytes and
+  six. Reproduced with the second of those — a body of U+0600 made the validator
+  build a **53,476,811-character** message, 4.25x the recorded budget, on one
+  authenticated request — but that reproduction ran against the interim body cap
+  the same issue withdrew. **At the cap this release ships, the worst the old
+  charge admitted is 75,497,472 characters, 6.00x the budget**, reached by the
+  same class of character (any raw non-printable 2-byte one) at the larger size
+  this cap admits. The breach predates this release: under the old 4 MiB default
+  the same under-charge already reached 1.33x the budget, over raw U+007F. The
+  refusal itself was never the amplifier — it stayed bounded and echoed nothing;
+  the transient was the cost. Every leaf is now charged at least the number of
+  characters it contributes to the render, verified over all 1,114,112 code
+  points, so the budget holds at **any** transport cap instead of resting on the
+  two caps' ordering. **Caller-visible**, twice over. An escape-heavy request
+  that previously reached a published `maxLength` refusal can now meet the
+  rendered-character refusal first — the same refusal shape, a different limit
+  and message. And a request whose whole render exceeds the composed ceiling
+  (`MAX_PARAMS_RENDERED_CHARS + MAX_PARAMS_NODES * 4` = **12,982,912
+  characters**) is now refused at the validation seam where it was previously
+  *admitted*: `float` and `None` leaves were charged nothing, so arguments
+  pairing a string at the budget with 99,995 full-precision floats passed the
+  gate and rendered 15,182,796 characters, 1.207x the budget. Such a request now
+  receives the seam's bounded refusal naming the tool and the limit it passed.
+  The identical under-charge in the migration loader's own walk is filed
+  separately ([#693](https://github.com/theurian/theurian/issues/693)).
 
 ## [0.2.2] - 2026-09-14
 

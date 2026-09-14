@@ -30,6 +30,12 @@ from ``build_server`` takes the fact arm RED with every prose arm green.
   *Controls* clause -- ``projectId`` "is *not* validated by a JSON schema at the
   MCP boundary -- there is no such validation" -- together, since they are one
   claim written twice. Beside it, the entry must name the seat.
+* ``docs/security/threat-model.md``'s **T-11 residual paragraph** is held by
+  ``test_sec12_record_figures.py`` beside it, not here. That paragraph carries
+  #669's figures rather than SEC-12's shipped-ness, and the two failures read
+  differently: a record naming the wrong seat is a record about a control that
+  moved, while a record printing the wrong number is a record about a constant
+  that did.
 * ``docs/roadmap.md``'s **Phase 0 SEC-12 row**. Its two cells may not read
   ``nothing`` and ``the whole control`` again, and the *What ships* cell must
   name the live class and the live builder.
@@ -59,6 +65,17 @@ a record asserting a guarantee nothing computes. It also does not reach the two
 records that commit moved and this module does not name:
 ``docs/protocol/mcp-tools.md`` and ADR-0031 itself.
 
+**The same boundary, restated for #669's records**, because that correction
+touched five surfaces and only one of them is held here. What these arms pin is
+**T-11's residual paragraph and the constants it quotes** -- its claim that the
+render bound is reachable, its count and factors, and every byte figure it
+prints. They do **not** pin ADR-0031's *Amendment 1* prose, the CHANGELOG entry,
+or the roadmap SEC-12 cell's ``#691`` clause. Those three carry the same
+correction in their own words, and no arm here reads them: a reader who reverts
+one of them meets nothing in this module. What the roadmap row *is* held to is
+unchanged -- its two retired cells and the seat it must name -- and the ``#691``
+wording inside its *owed* cell is prose, checked by reading.
+
 **Integration, not unit.** The fact arm builds a real ``MCPServer`` through
 ``build_server``, which reads every published schema off disk. The prose arms sit
 beside it because this is one claim held at two ends, which is where
@@ -74,7 +91,7 @@ from pathlib import Path
 from typing import Final
 
 import pytest
-from threat_model_claims import entry, prose
+from threat_model_claims import entry, pairings, prose
 from write_lock_claims import REPO_ROOT
 
 from theurian.application.project_service import ProjectRegistry
@@ -247,28 +264,8 @@ _REASSERTION_RECORDS: Final[dict[str, Callable[[], str]]] = {
 
 
 def _unshipped_reassertions(text: str) -> list[str]:
-    """Every place *text* pairs a SEC-12 subject with a not-shipped phrasing.
-
-    Normalised first, which is not optional: both retired passages are
-    soft-wrapped mid-claim in their source files and one writes its negation as
-    ``*not*``, so a scan over raw bytes would pass over the sentences it exists
-    to watch. :func:`~threat_model_claims.prose` is the shared normalisation --
-    markup dropped, wraps flattened, case folded.
-
-    Returns the window around each pairing rather than a count, so a failure
-    shows the sentence to judge instead of a number to reconcile.
-    """
-    normalised = prose(text)
-    subjects = [match.span() for match in _SEC12_SUBJECT.finditer(normalised)]
-
-    found: list[str] = []
-    for retraction in _UNSHIPPED.finditer(normalised):
-        for start, end in subjects:
-            if max(start - retraction.end(), retraction.start() - end, 0) <= _REACH_CHARS:
-                opening = max(0, min(start, retraction.start()) - 40)
-                found.append(normalised[opening : max(end, retraction.end()) + 40])
-                break
-    return found
+    """Every place *text* pairs a SEC-12 subject with a not-shipped phrasing."""
+    return pairings(text, _SEC12_SUBJECT, _UNSHIPPED, _REACH_CHARS)
 
 
 @pytest.mark.parametrize("record", sorted(_REASSERTION_RECORDS))
@@ -379,9 +376,13 @@ def test_the_roadmap_sec_12_row_no_longer_reads_nothing_and_the_whole_control() 
     )
     assert owed != _RETIRED_OWED_CELL, (
         f"the roadmap's SEC-12 row owes `{_RETIRED_OWED_CELL}` again. What is owed "
-        f"is the residue the control left -- the transport body-cap reconciliation "
-        f"(#669), the three unread context keys (#665) and ADR-0032's value-domain "
-        f"constraints -- not the control, which ships"
+        f"is the residue the control left -- the unit a published `maxLength` on a "
+        f"write-intent `body` counts, since JSON Schema counts code points while the "
+        f"byte cap it transcribes is in landed bytes (#691); the three unread context "
+        f"keys (#665); and ADR-0032 decision 3's value-domain constraints -- not the "
+        f"control, which ships. The transport body-cap reconciliation was on that list "
+        f"until #669 closed it, and this message is not the record of what is owed: "
+        f"`docs/roadmap.md`'s own cell is, and it is what the cell says that decides"
     )
 
 

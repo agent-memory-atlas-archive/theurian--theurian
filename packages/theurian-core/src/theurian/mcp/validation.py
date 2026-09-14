@@ -114,41 +114,91 @@ MAX_PARAMS_NESTING: Final = 32
 MAX_PARAMS_NODES: Final = 100_000
 
 #: How many characters of rendered scalar content a request's arguments may hold
-#: in total. **It is not the ceiling a request actually meets over this
-#: transport.** ``build_app`` calls ``streamable_http_app`` without
-#: ``max_request_body_size`` (``daemon/server.py``), so the SDK's own
-#: ``DEFAULT_MAX_REQUEST_BODY_SIZE`` -- 4 MiB,
-#: ``mcp/server/transport_security.py``, measured 2026-09-13 against
-#: ``mcp==2.1.1`` -- is the effective bound: ``RequestBodyLimitMiddleware``
-#: answers ``413 Request body too large`` at a third of this constant, before any
-#: MCP framing exists. So this bound is unreachable over the shipped transport in
-#: the default configuration, and what it defends is a composition that raises or
-#: removes that transport cap -- an explicit ``max_request_body_size``, another
-#: transport, or a seat that reaches this module with no HTTP tier in front of it
-#: -- where this seam's bounded refusal is what a caller gets instead of a bare
-#: ``413`` that names no tool and carries no remedy.
+#: in total, and **the ceiling a request actually meets over this transport**.
+#: ``build_app`` passes ``max_request_body_size=MAX_REQUEST_BODY_BYTES``
+#: (``daemon/server.py``, derived there from ``security/paths.py``'s
+#: ``MAX_SOURCE_FILE_BYTES``), and that bound sits *above* this one, so a body
+#: between the two caps arrives, is framed, and **can** meet this seam's bounded
+#: refusal -- which names the tool and the limit it passed -- instead of the bare
+#: ``413 Request body too large`` that the transport tier emits before any MCP
+#: framing exists. "Can", not "does": an escape-heavy body is charged several
+#: characters per wire byte and a plain one may satisfy a published
+#: ``maxLength`` first, so which refusal a given body meets depends on what it
+#: carries. This bound is reachable in the shipped default configuration either
+#: way.
 #:
-#: An earlier rationale here sized the bound *above* ``security/paths.py``'s 8 MiB
-#: ``MAX_SOURCE_FILE_BYTES`` so that a write-intent ``body`` at the cap ADR-0032
-#: decision 3 assigns it would not be refused at this seam. Measurement falsified
-#: that: such a body is refused one tier up and never reaches MCP framing at all,
-#: so the sizing bought nothing it claimed to buy. Reconciling the two caps is
-#: owed by **#669**, at the slice that opens the write surface; the value here is
-#: that issue's decision to make, not this constant's to pre-empt.
+#: **What holds this bound is the charge, not any property of JSON.** The two
+#: caps count different things -- ``MAX_REQUEST_BODY_BYTES`` bounds the bytes a
+#: caller may send, this one bounds the render work ``jsonschema`` may be asked
+#: to do -- and no ordering between them makes one imply the other, because
+#: ``{instance!r}`` escapes: a raw U+007F is one wire byte and four rendered
+#: characters, a raw U+0600 is two bytes and six. A body at the transport cap
+#: can therefore render to four times its own byte count. The bound holds
+#: because :func:`_rendered_width` charges **every leaf at least the number of
+#: characters that leaf contributes to the render** -- the escape classes and
+#: their measured ratios are on that function -- so :func:`_unbounded` refuses
+#: before the render is built. Do not re-derive this from the caps' ordering: "a
+#: request's rendered width never exceeds the bytes the caller sent" reads true
+#: and is false in both directions.
 #:
-#: ``tests/integration/test_input_validation_dispatch.py``'s
-#: ``test_the_rendered_character_bound_sits_above_what_the_transport_will_carry``
-#: pins the live relationship from both constants and drives the ``413`` from a
-#: real POST, so it goes RED if either cap moves and the gap cannot widen
-#: unnoticed while #669 waits.
+#: **This constant is the ceiling on charged leaves, not on the whole render.**
+#: What ``jsonschema`` renders is the instance, and an instance is its leaves
+#: plus the punctuation holding them together -- braces, brackets, ``, ``,
+#: ``: ``, and the quotes around each string, none of which any leaf is charged
+#: for. That excess is bounded by :data:`MAX_PARAMS_NODES`, because it is a
+#: fixed cost per node: measured 2026-09-15 over both the structured worst cases
+#: and 300,000 random shapes, it never reaches **4 characters per node** (the
+#: dict-of-string-keys and list-of-strings families converge on 4 from below;
+#: the random search peaked at 3.64). So the render a request can actually reach
+#: is ``MAX_PARAMS_RENDERED_CHARS + MAX_PARAMS_NODES * 4`` = **12,982,912
+#: characters**, 1.032x this constant. Quote that composed figure wherever the
+#: real ceiling matters; this constant alone under-states it.
+#:
+#: That ordering is the reconciliation **#669** asked for, and it is deliberate
+#: rather than incidental. Until it landed, ``streamable_http_app`` was called
+#: with no ``max_request_body_size``, so the SDK's own 4 MiB
+#: ``DEFAULT_MAX_REQUEST_BODY_SIZE`` answered ``413`` at a third of this constant
+#: and, *while the charge was a plain code-point count*, nothing could reach this
+#: seam -- 4 MiB of one-byte characters is 4.19 M code points, a third of the
+#: budget. That clause matters now that the charge counts escapes: 4 MiB of raw
+#: U+007F is charged 16.78 M, so an escape-heavy body reaches this seam even
+#: under the SDK's own default. The decision, its derivation from
+#: ``MAX_SOURCE_FILE_BYTES``, and the encodings it still leaves meeting the
+#: ``413`` are recorded on ``MAX_REQUEST_BODY_BYTES`` itself, which is the place
+#: to read before moving either cap; ADR-0031's *Amendment 1* records the same
+#: reconciliation from the decision's side, with what it left open.
 #:
 #: It is *not* the same guard ``migration_loader``'s ``MAX_DOCUMENT_RENDERED_CHARS``
 #: is. There, a YAML anchor aliased N deep expands a 500-byte file into millions
 #: of rendered characters, so width is unbounded by the input's own size. JSON
 #: has no aliases, so a request's rendered width is bounded by the bytes the
-#: caller sent; what this adds is a limit this seam records and refuses at
-#: rather than one only the transport knows.
+#: caller sent *times a small constant* -- at most four, per the escape classes
+#: on :func:`_rendered_width`, rather than the unbounded factor aliasing buys.
+#: What this adds is a limit this seam records and refuses at rather than one
+#: only the transport knows, and a factor of four is exactly the gap that makes
+#: recording it necessary.
 MAX_PARAMS_RENDERED_CHARS: Final = 12 * 1024 * 1024
+
+#: How many code points :func:`_rendered_width`'s fallback reprs at a time once a
+#: leaf is wider than this. The fallback's whole cost is the transient ``repr``
+#: it builds, and that transient is denominated in *bytes*, not characters: PEP
+#: 393 sizes a ``str`` by its widest member, so a repr whose output carries one
+#: printable astral character is stored at 4 bytes per character rather than 1.
+#: Reprring a 26 MB leaf whole therefore peaked far above what the
+#: character-denominated records claimed. Slicing bounds it instead, and the
+#: bound has **two** terms, because the same expression builds two strings: the
+#: repr output, at most ten characters per code point, *and* the concatenated
+#: slice ``_chunked_width`` reprs. Both can sit in the 4-byte kind at once, so
+#: the ceiling is ``_CHUNK_CODE_POINTS * (10 + 1) * 4`` -- **~352 KiB** at this
+#: size, whatever the leaf's width or kind -- and the loop stops as soon as the
+#: running charge passes the remaining budget. That figure is the module's one
+#: ceiling; :func:`_chunked_width` and :func:`_rendered_width` quote it and
+#: nothing else.
+#:
+#: Wide enough that the exact single-repr path still covers every string a real
+#: call carries, which matters because the chunked sum is a *bound* rather than
+#: the exact render -- see :func:`_chunked_width`.
+_CHUNK_CODE_POINTS: Final = 8192
 
 #: The keywords whose own ``jsonschema`` message names the offending *keys* and
 #: interpolates no instance value, so it can be quoted (bounded) instead of
@@ -287,8 +337,13 @@ def _location(path: Iterable[object]) -> str:
     A per-segment cut *as well* is what an earlier draft carried, and it is not
     kept: with the join bounded it changes no output this module can produce, so
     nothing could drive it. The transient the join builds is bounded by the
-    request's own budget, :data:`MAX_PARAMS_RENDERED_CHARS`, since every
-    caller-written segment is a key the walk already charged for.
+    request's own budget, :data:`MAX_PARAMS_RENDERED_CHARS`: every
+    caller-written segment is a key the walk already charged for, and
+    :func:`_rendered_width` charges a string the width ``repr`` renders it as --
+    which is exactly the ``repr(part)[1:-1]`` this line builds -- so a key's
+    escapes fall inside that budget rather than outside it. A charge of
+    ``len(part)`` would not bound this: a key of non-printable astral
+    characters builds ten characters here for each one it was charged.
     """
     segments = [repr(part)[1:-1] if isinstance(part, str) else str(part) for part in path]
     return _bounded("/".join(segments)) or "<root>"
@@ -385,30 +440,202 @@ def _iter_nodes(root: object) -> Iterator[tuple[object, int]]:
             frontier.append((child, depth + 1))
 
 
-def _rendered_width(value: object) -> int:
+def _chunked_width(value: str, remaining: int) -> int:
+    """A bound on ``value``'s repr contribution, built without reprring it whole.
+
+    Reprring a leaf whole costs a transient proportional to the leaf, and the
+    proportion is in *bytes*: the output runs to ten characters per code point,
+    each stored at up to four bytes once any printable astral character puts the
+    result in PEP 393's widest kind. Reprring one slice at a time caps that
+    transient at the slice, and stopping as soon as the running total passes
+    ``remaining`` caps the *work* too: the caller refuses at that point, so the
+    rest of the leaf is never read.
+
+    **The cap has two terms, not one.** The line below builds two strings per
+    slice -- the concatenation ``'"' + value[...]`` and the ``repr`` of it -- and
+    both can be in the 4-byte kind at the same time, so the bound is
+    ``_CHUNK_CODE_POINTS * (10 + 1) * 4`` = **360,448 bytes of payload**, ~352
+    KiB, plus the two ``str`` object headers. Three readings of that one
+    transient have been taken -- through the walk, directly on the arm, and on
+    round 3's own instance -- and they are one range rather than three figures:
+    **360,548 to 361,156 bytes**, every one of them the payload bound plus
+    headers, the spread being where the widening character falls in its slice.
+    The worst leaf is one of *non-printable* astral characters carrying a
+    *printable* astral: the first makes the repr output ten characters per code
+    point, the second forces both that output and the concatenated slice into
+    the widest kind. An earlier record priced only the repr output
+    (``* 10 * 4``, 320 KiB) and omitted the concatenation.
+
+    **The slice is reprred in a forced quote context, and that is what makes the
+    sum sound.** ``repr``'s choice of delimiter is a property of the whole
+    string: one holding apostrophes and no ``"`` is rendered with ``"``
+    delimiters and its apostrophes cost one character each, while any other
+    string is rendered with ``'`` delimiters and they cost two. Summing naive
+    per-slice reprs can therefore *under*-count -- a slice with no ``"`` scores
+    its apostrophes at one while the whole string scores them at two.
+    Prefixing each slice with a ``"`` removes the choice: every slice is then
+    rendered with ``'`` delimiters, every apostrophe costs two, and no other
+    character's width depends on context. The overhead that prefix adds is
+    exactly three characters -- two delimiters and the ``"`` itself, which
+    ``repr`` never escapes -- hence the ``- 3``; subtracting four would
+    under-count by one per slice, which is the unsafe direction.
+
+    So the result is exact except for a string carrying apostrophes and no
+    ``"``, where it over-charges by one per apostrophe. Over-charging refuses a
+    request the budget was sized to admit, so the threshold above which this runs
+    is set past anything a real call carries, and every small string keeps the
+    exact single-repr arm.
+    """
+    total = 0
+    for start in range(0, len(value), _CHUNK_CODE_POINTS):
+        total += len(repr('"' + value[start : start + _CHUNK_CODE_POINTS])) - 3
+        if total > remaining:
+            # Already past what the caller can accept; the refusal does not need
+            # the exact number and the rest of the leaf is not worth reading.
+            return total
+    return total
+
+
+def _rendered_width(value: object, remaining: int = MAX_PARAMS_RENDERED_CHARS) -> int:
     """How many characters ``value`` contributes to a ``{instance!r}`` render.
 
-    O(1) for every leaf a parsed JSON request can hold, which keeps the budget
-    walk's cost the walk's own. An ``int`` reports its decimal digit count
-    estimated from ``bit_length`` -- never ``str(value)``, which is quadratic for
-    a giant integer and, past CPython's int-to-str limit, raises the very cost
-    this bound exists to refuse. ``30103/100000`` rounds ``log10(2)`` up, so the
+    **Every leaf is charged at least the number of characters it contributes to
+    that render**, and that, not any property of JSON, is what holds
+    :data:`MAX_PARAMS_RENDERED_CHARS`. Two things the invariant deliberately does
+    *not* say. It is about a leaf's **contribution**, not about
+    ``len(repr(leaf))``: the ``str`` arms exclude the two delimiting quotes
+    ``repr`` puts around a string, because those are punctuation of the render
+    rather than content of the leaf -- the ``bytes`` arm is the one asymmetry,
+    charging its whole repr including the ``b''`` delimiters, which over-charges
+    in the safe direction. And it is about *leaves*: a container is charged zero
+    here because :func:`_iter_nodes` descends into it and charges its members, so
+    the punctuation holding an instance together is counted by
+    :data:`MAX_PARAMS_NODES` instead -- at most 4 characters per node, measured,
+    giving the composed ceiling recorded on
+    :data:`MAX_PARAMS_RENDERED_CHARS`. **Charging a leaf zero is how this
+    invariant was broken once**: ``float`` and ``None`` fell through to a
+    ``return 0`` justified as "bounded per node", and a request pairing a string
+    at the budget with 99,995 full-precision floats rendered 15,182,796
+    characters -- 1.207x the budget -- and was *admitted*. Bounded is not free;
+    every leaf type is charged, and the final arm charges whatever a future
+    parser hands this walk rather than enumerating what is expected.
+    ``repr`` escapes: a leaf charged its own length is charged one character for
+    something that renders as up to ten, and ``jsonschema`` then builds a
+    message this seam never budgeted for. The escape classes, measured
+    exhaustively over all 1,114,112 code points on CPython 3.13 -- each as
+    *rendered characters per code point*, then per *raw wire byte*, which is the
+    ratio the transport cap does not bound:
+
+    * printable in any plane, the backslash aside -- **1** per code point, so
+      1.00 per wire byte at worst (ASCII; printable non-ASCII renders narrower
+      than it is sent).
+    * a two-character escape -- exactly tab, newline, return and the backslash,
+      plus an apostrophe when the string *also* holds a ``"``. ``repr`` switches
+      to a ``"`` delimiter for a string carrying only apostrophes, and never
+      escapes a ``"`` at all, so ``'`` is the one character whose width depends
+      on the rest of the string. **2** per code point; 2.00 per wire byte for a
+      raw ``'``, which JSON leaves alone.
+    * ``\\xHH`` -- exactly the 64 code points U+0000-U+0008, U+000B-U+000C,
+      U+000E-U+001F, U+007F-U+00A0 and U+00AD -- **4** per code point, and
+      **4.00 per wire byte for a raw U+007F**, the worst ratio any character
+      reaches. The C0 block below it cannot: JSON forbids those raw, so each
+      costs at least two wire bytes.
+    * ``\\uXXXX`` -- every other non-printable BMP code point, lone surrogates
+      included -- **6** per code point; 3.00 per wire byte for a raw U+0600,
+      2.00 for a three-byte one.
+    * ``\\UXXXXXXXX`` -- non-printable astral -- **10** per code point, 2.50 per
+      wire byte.
+
+    That second column is why no ordering of the two caps substitutes for this
+    charge: a body at :data:`~theurian.daemon.server.MAX_REQUEST_BODY_BYTES`
+    renders to as much as four times its own byte count.
+
+    ``str`` takes two arms, both *exact*. ``repr`` renders a printable character
+    as itself and escapes every other one, so a string ``str.isprintable()``
+    accepts that carries neither a backslash nor an apostrophe renders to
+    exactly its own length -- verified exhaustively: printable and outside
+    ``{'\\\\', "'"}`` implies a one-character render, with no exceptions, and a
+    ``"`` is never escaped whichever delimiter ``repr`` picks. That arm builds
+    nothing, and ``isprintable`` stops at the first non-printable character, so
+    the clean text a real call carries costs three C-speed scans and no
+    allocation. Measured 2026-09-15, median of five, on the whole
+    :func:`_unbounded` walk: **0.00 ms** for a realistic ``knowledge.search``
+    call, 8.8 ms for an ASCII leaf at :data:`MAX_PARAMS_RENDERED_CHARS`, and
+    **17.9 ms for one at the transport cap** -- which is the number that
+    matters, since the transport admits 2.08x this gate's budget in ASCII
+    characters and a clean leaf is scanned whole before the budget refuses it.
+    For scale, ``json.loads`` on the same at-budget body costs 11.4 ms.
+
+    Everything else falls back to a ``repr``, exactly for a leaf at or under
+    :data:`_CHUNK_CODE_POINTS` (``len(repr(value)) - 2``: ``repr`` always carries
+    exactly two delimiting quotes, so that difference is the contribution rather
+    than an estimate) and through :func:`_chunked_width` above it.
+
+    **The fallback's cost is a transient denominated in bytes, and that is why it
+    is chunked.** Reprring a leaf whole builds an output of up to ten characters
+    per code point, and PEP 393 sizes a ``str`` by its *widest* member -- so the
+    same escape-heavy leaf whose repr is pure ASCII at 1 byte per character
+    becomes 4 bytes per character the moment one printable astral character is
+    present. Character-denominated records missed that by 4x. Measured
+    2026-09-15 on the fallback arm alone, for the widest leaf the transport
+    admits: reprring it whole peaks at **100 MiB** (dense U+007F) to **400 MiB**
+    (the same leaf with one emoji); chunked, the same two leaves peak at
+    **0.04 MiB** and **0.15 MiB**.
+
+    Those two are corroborations, not the ceiling, and it is worth saying what
+    they were measured on: a dense-U+007F leaf, walked with the early exit
+    disabled, whose single widening character sat in the final slice. U+007F
+    renders four characters per code point rather than ten, so neither figure
+    reaches the worst case -- the ceiling is
+    ``_CHUNK_CODE_POINTS * (10 + 1) * 4``, **~352 KiB**, derived and measured on
+    :func:`_chunked_width`, and it is the one figure to quote. Instrument:
+    ``tracemalloc`` peak, which is the Python-heap question; ``ru_maxrss``
+    answers a different one and is quoted beside its own figures on
+    :data:`~theurian.daemon.server.MAX_REQUEST_BODY_BYTES`.
+
+    Chunking pays in time as well, because :func:`_chunked_width` stops as soon
+    as the running charge passes what the caller can still accept. On the same
+    at-cap leaves the whole walk went from 82.5 ms to 9.9 ms (dense U+007F),
+    119.1 ms to 10.8 ms (with an emoji) and 71.0 ms to 12.0 ms (a 2-byte
+    non-printable); the fast path is unchanged at 17.9 ms. The worst shape left
+    is a clean ASCII leaf with one non-printable at its end -- ``isprintable``
+    scans it whole, then the chunked walk does too, because no prefix of it
+    reaches the budget -- measured **29.3 ms**, down from 50.7 ms.
+
+    O(1) for the other leaves, which keeps the budget walk's cost the walk's
+    own. An ``int`` reports its decimal digit count estimated from
+    ``bit_length`` -- never ``str(value)``, which is quadratic for a giant
+    integer and, past CPython's int-to-str limit, raises the very cost this
+    bound exists to refuse. ``30103/100000`` rounds ``log10(2)`` up, so the
     estimate never under-charges.
     """
-    if isinstance(value, str | bytes):
-        return len(value)
-    if isinstance(value, bool):
-        # Matched before `int`, of which it is a subclass, so its one-bit
-        # `bit_length` does not under-report "True"/"False".
-        return len(repr(value))
-    if isinstance(value, int):
+    if isinstance(value, str):
+        if value.isprintable() and "\\" not in value and "'" not in value:
+            return len(value)
+        if len(value) > _CHUNK_CODE_POINTS:
+            return _chunked_width(value, remaining)
+        return len(repr(value)) - 2
+    if isinstance(value, int) and not isinstance(value, bool):
+        # `bool` excluded rather than matched first: it is an `int` subclass whose
+        # one-bit `bit_length` would under-report "True"/"False", and it is
+        # charged by the final arm instead.
         digits = (value.bit_length() * 30103) // 100_000 + 1
         return digits + 1 if value < 0 else digits
-    # Every other leaf a parsed JSON request can hold -- a `float`, a `null` --
-    # renders to a handful of characters, so its width is already bounded by
-    # :data:`MAX_PARAMS_NODES` counting the node itself. Only a string and an
-    # integer are unbounded per node, and those are the two charged above.
-    return 0
+    if isinstance(value, Mapping | list | tuple | set | frozenset):
+        # Not a leaf: `_iter_nodes` descends into exactly these and charges every
+        # member on its own, so a width here would double-count them. What a
+        # container adds beyond its members is punctuation, and that is the
+        # per-node constant the composed ceiling accounts for. This type list is
+        # `_iter_nodes`'s own, and the two must not drift apart.
+        return 0
+    # Everything else, charged its whole repr rather than enumerated: `float` and
+    # `None`, which a `return 0` once waved through (above); `bytes`, which no
+    # `json.loads` output holds but whose escapes would otherwise go uncounted;
+    # and whatever a future parser hands this walk. For `bytes` the charge
+    # includes the `b''` delimiters, the one arm that over-charges rather than
+    # matching the render exactly -- the safe direction, and the asymmetry the
+    # invariant above names.
+    return len(repr(value))
 
 
 def _unbounded(tool: str, params: Mapping[str, object]) -> InputRefusal | None:
@@ -431,7 +658,7 @@ def _unbounded(tool: str, params: Mapping[str, object]) -> InputRefusal | None:
         discovered += 1
         if discovered > MAX_PARAMS_NODES:
             return _oversized(tool, MAX_PARAMS_NODES, "values")
-        rendered += _rendered_width(value)
+        rendered += _rendered_width(value, MAX_PARAMS_RENDERED_CHARS - rendered)
         if rendered > MAX_PARAMS_RENDERED_CHARS:
             return _oversized(tool, MAX_PARAMS_RENDERED_CHARS, "characters of content")
     return None
