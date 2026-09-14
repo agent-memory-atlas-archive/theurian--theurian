@@ -33,7 +33,8 @@ act through `theurian review ingest` (see below).
 ```
 
 `projectId` is **required** on every project-scoped tool that ships today:
-`knowledge.search`, `knowledge.get`, and `knowledge.status`. Omitting it is a
+`knowledge.search`, `knowledge.get`, `knowledge.status`, `review.findings` and
+`review.search`. Omitting it is a
 validation error, never a fallback to "the last one used". With ten subagents
 sharing one daemon, an implicit default resolves one agent's query against
 another agent's project ([ADR-0002](../adr/0002-single-local-daemon-over-streamable-http.md)).
@@ -47,7 +48,79 @@ current MCP tools.
 `agentId` and `taskId` are designed proposal provenance fields. Theurian does
 not authenticate agents, and no MCP proposal tool accepts them today.
 
+**All three optional fields are *admitted* by the published input schemas and
+read by nothing.** They belong to the shared context every project-scoped tool
+references, so a call that sets `snapshotId`, `agentId` or `taskId` passes
+validation and is then answered exactly as if it had not set it — no refusal, no
+signal. Which of the two cures that gets, implementing them or withdrawing them
+from the contract, is
+[#665](https://github.com/theurian/theurian/issues/665).
+
 Schema: [`tool-context.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/tool-context.schema.json).
+
+## Every tool call is validated against its published input schema
+
+Every tool listed above has a published input schema under `schemas/mcp/`, and
+the daemon validates each `tools/call` against that tool's schema **before the
+call reaches the tool** (SEC-12,
+[ADR-0031](../adr/0031-mcp-input-is-schema-validated-in-middleware.md)). The
+check runs in an MCP server middleware, above the SDK's argument coercion, which
+is the only tier that still sees the keys a caller actually sent.
+
+| Tool | Input schema |
+| :-- | :-- |
+| `knowledge.search` | [`knowledge-search-input.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/knowledge-search-input.schema.json) |
+| `knowledge.get` | [`knowledge-get-input.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/knowledge-get-input.schema.json) |
+| `knowledge.status` | [`knowledge-status-input.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/knowledge-status-input.schema.json) |
+| `project.list` | [`project-list-input.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/project-list-input.schema.json) |
+| `review.findings` | [`review-findings-input.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/review-findings-input.schema.json) |
+| `review.search` | [`review-search-input.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/review-search-input.schema.json) |
+| `system.capabilities` | [`system-capabilities-input.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/system-capabilities-input.schema.json) |
+
+The five project-scoped tools reach `projectId` and the three optional context
+fields through a `$ref` to `tool-context.schema.json` rather than restating them,
+so every tool agrees about `projectId` by construction. `project.list` and
+`system.capabilities` take no arguments, and their schemas say exactly that: an
+empty `properties`, closed.
+
+**Unknown keys are refused, not dropped.** A key a tool's schema does not name is
+rejected and nothing runs. Sending a forward-looking field to see whether this
+build supports it does not work, and is not meant to: a server that quietly
+discards a parameter leaves a client believing it asked for something it did not
+get. `system.capabilities` is where a client learns what this build supports.
+
+A refusal arrives in the same shape as a refusal raised inside a tool body —
+`content` plus `isError: true`, and the same key set — so a caller cannot tell
+which tier answered from the shape, only from what it says. It names the offending
+key path and the constraint that rejected it, and it never reproduces the value
+the key carried. It carries no code from the [Errors](#errors) table.
+
+A tool this daemon publishes no input schema for is refused at dispatch rather
+than served, so the control covers whatever set is registered rather than the set
+someone remembered to enumerate.
+
+**What the schemas constrain, and what they leave to the tool.** Shape, key set
+and length. Vocabulary and numeric range stay tool-level refusals on purpose: a
+published `enum` answers "does not satisfy" where `review.findings` names the
+closed set it accepts and tells you to omit the filter, and a published range
+would turn `knowledge.search`'s deliberate clamps on `limit` and `maxTokens` into
+wire refusals. So a schema-valid request can still be refused by the tool, and
+that is by design.
+
+### Three behaviour changes a caller can observe
+
+| Before | Now |
+| :-- | :-- |
+| An unknown or extra key on any tool was silently dropped by the SDK's argument model, and the call was served | The call is refused, with the key named |
+| `project.list` and `system.capabilities` take no arguments, and anything sent with them was ignored | Anything sent with them is refused |
+| A `knowledge.search` `query` longer than `MAX_QUERY_CHARS` (2,000 characters) was truncated to that length and the prefix searched | The call is refused at the wire and nothing is searched |
+
+The third is the one that changes an answer rather than a silence, and the reason
+it refuses instead of truncating is recorded on the schema's own `query`
+description: truncating a `query` changes *what* was asked, and the caller cannot
+tell from the response that it happened. Clamping `limit` or `maxTokens` changes
+only *how much* comes back, so those stay clamps. The handler's own truncation
+stays below this surface as a backstop and is unreachable through this contract.
 
 ## Knowledge
 
@@ -516,10 +589,11 @@ served row comes through, and discards it.
 **One bound on this surface clamps instead of refusing, and it is the only
 value whose size the caller does not control.** A served `findingText`
 is cut at 2,000 characters and marked with a trailing `...`, so a cut value
-cannot be read as a whole one. It is the same number `knowledge.search` clamps a
-`query` to, derived from that constant rather than chosen again: one bound
-governs the longest string this daemon will search for and the longest finding
-it will hand back. It fires on nothing a reviewer writes — a finding is one
+cannot be read as a whole one. It is the same number `knowledge.search` bounds a
+`query` at — refused at the wire since SEC-12, and clamped below the surface as a
+backstop — derived from that constant rather than chosen again: one bound governs
+the longest string this daemon will search for and the longest finding it will
+hand back. It fires on nothing a reviewer writes — a finding is one
 trailer line, and the longest in this repository's own history was 193
 characters when the bound was chosen (measured 2026-09-02) — but `findingText`
 is byte-preserved from a commit message, and a commit message line has no length
@@ -951,8 +1025,10 @@ The four, so that "breaking but unbumped" is checkable rather than asserted:
 the `knowledge.search` response reshape, the removal of `withheldSuperseded`,
 and the two required fields `project.list` gained (all Milestone 5), and the
 removal of `system.capabilities.milestone` (#206). Each is named as BREAKING
-in the changelog, which is what protects an integrator. The first bump is the
-first breaking change after the version that first carries `theurian/v1`.
+in the changelog, which is what protects an integrator. A breaking change bumps
+unless this section records an exemption for it on grounds specific to that
+change; every exemption below is granted once, and none of them widens to cover
+the next one.
 
 **`milestone`'s exemption rests on different ground.** Measured across
 `core-v0.1.0.dev0` through `core-v0.1.0.dev4`, the field shipped in every
@@ -989,3 +1065,122 @@ rather than away from it, since the table always documented 4 for "that
 migration is already in place". **Scoped to this one code on this one command**:
 it says nothing about `compat check`'s 0/2/3, which a plugin script does branch
 on, or about `migrate apply`'s 4.
+
+**SEC-12's three caller-visible refusals are the sixth, seventh and eighth**
+([ADR-0031](../adr/0031-mcp-input-is-schema-validated-in-middleware.md)).
+Publishing an input schema per tool is itself additive — nothing was removed, and
+no field became required that the tools did not already require — but each of the
+three changes tabulated under [*Three behaviour changes a caller can
+observe*](#three-behaviour-changes-a-caller-can-observe) turns a call that was
+served into a call that is refused, and served-to-refused is the shape the rule
+at the top of this section calls breaking. `protocolVersion` stays `theurian/v1`,
+which takes the breaking-but-unbumped series to eight. Two legs are shared by all
+three, and each then has a ground of its own.
+
+**The shared leg, one: the consumer census.** The population is every place in
+this repository that builds an MCP `tools/call`, excluding Core itself — Core's
+own tests are the instrument that pins these refusals, not a consumer of them —
+and excluding `docs/`, which quotes these strings and constructs no call, this
+paragraph included. Measured at `03dac2ef` on the branch of
+[#663](https://github.com/theurian/theurian/pull/663), and re-runnable as
+written:
+
+```console
+$ git grep -n '"arguments"' -- . ':!packages/theurian-core' ':!docs'
+tests/e2e/test_daemon_single_instance.py:240:                "params": {"name": tool, "arguments": arguments},
+
+$ git grep -ln "mcp__\|arguments" -- plugins/claude-code; echo "exit=$?"
+exit=1
+```
+
+One construction site, and it is a test helper; no plugin script builds an MCP
+call at all, because the plugin's scripts shell out to the CLI. That helper's
+call sites are counted first and then partitioned — into the six written on one
+line and the two whose argument object wraps — so the listing below is the whole
+of them, and every one sends keys this document defines:
+
+```console
+$ git grep -c '\.call(' -- tests/e2e
+tests/e2e/test_daemon_single_instance.py:8
+
+$ git grep -n '\.call("' -- tests/e2e
+tests/e2e/test_daemon_single_instance.py:393:        result = client.call("knowledge.search", {"projectId": "not-registered", "query": "x"})
+tests/e2e/test_daemon_single_instance.py:437:        result = client.call("review.findings", {"projectId": "demo"})
+tests/e2e/test_daemon_single_instance.py:579:        page = client.call("review.findings", {"projectId": "demo", "limit": 1})
+tests/e2e/test_daemon_single_instance.py:580:        whole = client.call("review.findings", {"projectId": "demo"})
+tests/e2e/test_daemon_single_instance.py:581:        refused = client.call("review.findings", {"projectId": "demo", "limit": 101})
+tests/e2e/test_daemon_single_instance.py:651:        capabilities = client.call("system.capabilities", {})
+
+$ git grep -nA1 '\.call($' -- tests/e2e
+tests/e2e/test_daemon_single_instance.py:281:            result = client.call(
+tests/e2e/test_daemon_single_instance.py-282-                "knowledge.search", {"projectId": running_daemon.project_id, "query": "JWT"}
+--
+tests/e2e/test_daemon_single_instance.py:636:        results = client.call(
+tests/e2e/test_daemon_single_instance.py-637-            "knowledge.search", {"projectId": running_daemon.project_id, "query": "JWT"}
+```
+
+Four key sets — `{projectId, query}`, `{projectId}`, `{projectId, limit}`, and
+the empty one — every key of them defined above, and the longest `query` in the
+list is three characters. The only two places in the repository that build a
+string *at* the 2,000 bound are inside Core, and neither builds a `tools/call`:
+
+```console
+$ git grep -nE '"[a-z]" \* MAX_QUERY_CHARS|MAX_QUERY_CHARS \+' -- . ':!docs'
+packages/theurian-core/tests/integration/test_index_store.py:1607:    padding = "x" * MAX_QUERY_CHARS
+packages/theurian-core/tests/integration/test_review_findings_tool.py:663:    "one-past-the-bound": _finding_text_of(MAX_QUERY_CHARS + 1),
+```
+
+The first drives `search_lexical` below this surface, where the clamp is still
+the backstop; the second sizes a `findingText`, which clamps by design.
+
+**The shared leg, two: the pre-1.0 versioning policy.** The Core changelog
+records it in its own header — *pre-1.0, a MINOR bump may change the protocol;
+post-1.0, only a MAJOR may* — and that is the leg these three rest on. It is
+deliberately **not** the "no known external integration to break" leg the two
+exemptions above use: Core is published on PyPI as `theurian`, so nobody here can
+say what is installed against it. What the policy says is that a pre-1.0 MINOR is
+where a protocol change is allowed to land, and that is where these three land.
+
+**Sixth: an unknown or extra key on any tool is refused.** The drop was the SDK's
+argument model, never this contract — no version of this document ever published
+that a key it does not name is accepted, so a call carrying one was always
+outside the valid surface described here. What this document *did* call valid is
+served unchanged, and that is measured rather than asserted:
+`test_input_schema_agreement.py` holds each published schema's key set and its
+handler's parameter set equal, per tool over the registered set, less the three
+shared context keys it names; and `test_input_validation_wire.py`'s positive
+control answers a valid call through the middleware and again on a server with
+the seat lifted off, asserting the two results equal. **Scoped to keys no schema
+names**: it says nothing about a key a schema does name, whose value refusals are
+the published bounds, and nothing about the vocabulary and range refusals that
+stay inside the tools.
+
+**Seventh: `project.list` and `system.capabilities` refuse any argument.** Same
+ground, and a narrower one: neither tool has ever had an argument in this
+document or in any schema under `schemas/mcp/`, so nothing published as accepted
+became refused. Sending no argument is unaffected — the census's one
+`system.capabilities` call site passes `{}`, which is exactly what an empty,
+closed `properties` admits. **Scoped to these two tools**: it says nothing about
+the five project-scoped tools, whose arguments this document does define.
+
+**Eighth: a `knowledge.search` `query` over 2,000 characters is refused instead
+of truncated.** This one shares the two legs above but not the
+never-published-as-accepted ground the sixth and seventh rest on, and the
+difference is worth stating precisely. It is not a type-tightening: no *input*
+schema existed before this change, so there was no published type to tighten —
+the input contract was prose. The **bound** was already published, in two places.
+`knowledge-search-response.schema.json` puts `maxLength: 2000` on the `query` it
+echoes back, and this document has carried the same number since before SEC-12,
+in the sentence under `review.findings` that derives `findingText`'s cut from the
+bound `knowledge.search` puts on a `query`. So what changed is the *disposition*
+of an over-bound query — from clamp to refuse — at a bound the contract already
+published, which moves the behaviour toward the meaning the document already
+published rather than away from it: the same ground the fifth exemption above
+uses in those words. **Scoped to `query` on this one tool**: `limit` and
+`maxTokens` still clamp, `findingText` still clamps, and no other published bound
+changed disposition.
+
+Each of the three is named as BREAKING in the Core changelog by the release that
+ships SEC-12, under that release's `### Changed`. That entry is what protects an
+integrator, and it is **not written yet** — it lands with the release commit, not
+with this section.
