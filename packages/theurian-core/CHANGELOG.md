@@ -12,6 +12,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-09-16
+
 ### Security
 
 <!-- cut: assign the advisory id (GHSA / CVE / release note) for the T-26 timing side-channel -->
@@ -10141,7 +10143,8 @@ error is the one reading the release notes to decide whether to upgrade.
 - Migration `contentFile` paths are rejected at both schema and runtime level if
   they escape the project root.
 
-[Unreleased]: https://github.com/theurian/theurian/compare/core-v0.2.2...main
+[Unreleased]: https://github.com/theurian/theurian/compare/core-v0.2.3...main
+[0.2.3]: https://github.com/theurian/theurian/compare/core-v0.2.2...core-v0.2.3
 [0.2.2]: https://github.com/theurian/theurian/compare/core-v0.2.1...core-v0.2.2
 [0.2.1]: https://github.com/theurian/theurian/compare/core-v0.2.0...core-v0.2.1
 [0.2.0]: https://github.com/theurian/theurian/compare/core-v0.1.0...core-v0.2.0
