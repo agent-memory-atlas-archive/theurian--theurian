@@ -95,6 +95,16 @@ def test_consecutive_nights_walk_the_whole_census_before_repeating() -> None:
     into the range would revisit some files twice in a cycle and skip others
     entirely, which is invisible on any single night. Asserted over a full cycle
     because that is the only window in which the difference shows.
+
+    **The frozen synthetic census is the condition, not a convenience.** This
+    property holds only while the census does not change, and the real one is
+    recomputed nightly: measured across one week of this repository's growth, 0
+    of 30 dates resolved to the same file, and a replay across real nights drew
+    repeats well before the census had been walked (measured in PR #730's review
+    round). So this pins the *scheme* -- given a fixed population, the index
+    walks it before repeating -- and deliberately not a claim about the sweep's
+    coverage of the production tree, which :mod:`sweep_census`'s own docstring
+    now declines to make.
     """
     start = _FIRST_NIGHT
 

@@ -172,6 +172,67 @@ excluded from the published documentation site for that reason.
   filed as an issue, or recorded and closed, per the filing filter's
   dispositions — and the PR flips. Reaching a third round is itself the finding.
 
+### The async red-team sweep
+
+CLAUDE.md's blast-radius table sends a middle-row change's adversarial review
+here rather than into that PR's round. Two things run under that promise.
+
+**The nightly workflow.** `Red-team sweep`
+([`.github/workflows/red-team.yml`](../../.github/workflows/red-team.yml)) runs
+`tools/sweep.py` at 01:17 UTC daily against one production file: the census
+rotated by the date, advanced past any file with nothing to mutate, at most six
+mutations, one full suite walk each and one more for the unmutated control —
+seven walks on a full night. A night that does not come back clean files
+what it saw **with the commit it ran against** — the target is
+`ordinal % census-size`, so a date alone stops reproducing the night as soon as
+`main` moves (`tools/sweep_filing.py` records the measurement: 0 of 30 dates
+resolved to the same file across one week of this repository's growth). Its
+`workflow_dispatch` `date` input is the lever that makes a clean night mean
+something: it aims the rotation at a file whose verdict is already known, and
+until an instrument has been heard to speak, its zero is not evidence
+(INSTRUMENT's first rule).
+
+**The agent pass.** Before a release tag is cut, `theurian-adversarial-review`
+runs over `origin/main` at the candidate commit and files what it finds under the
+same label. The step is [release.md's §1 Prepare](release.md#1-prepare), and the
+Release checklist carries it as a *(no check)* item — "The async red-team sweep's
+release-cut pass has run over `origin/main` at the candidate commit". The anchor
+is the ritual and not a frequency, deliberately: a cadence nobody performs stops
+silently, and no runs produce no issues, which reads as a clean tracker. It binds
+from the first tag cut after this rule lands on `main`: a release already tagged
+when it lands predates the ritual rather than skipping it.
+
+**What the two legs reach.** The nightly one is census-limited mutation
+sampling, not coverage. Measured in the round on
+[#730](https://github.com/theurian/theurian/pull/730), against a 139-module
+census: 24 of those modules are barren and never become a target; the median wait
+before a productive module is first attacked is 59 nights; a module that is drawn
+gets at most six of as many as 63 candidates; and the tree it is attacked against
+is that night's, not a later reader's. The census is the production tree alone,
+so `tools/`, `tests/` and `docs/` sit outside it entirely — 38 of 60 sampled
+merged pull requests touch no census file at all, among them the two that built
+this sweep and wrote this section. **Neither leg is triggered by a diff.** The
+nightly one samples the tree; the release-cut pass is the half that attacks what
+has accumulated since the last cut.
+
+**Where it lands.** Both file under the `async-sweep` label and enter
+[the filing filter](#the-filing-filter)'s triage like any other filing. A machine
+filing arrives carrying that label and nothing else: Priority, Type and the two
+dates are the orchestrator's to set when it picks the issue up.
+
+**The ratchet.** An `async-sweep` finding closes when the automation covering it
+lands — a test, a lint rule, or a CI gate — or when a decline is recorded in the
+issue. Every filed body ends with a "Proposed automation" heading, which is where
+that obligation is written down.
+
+**Two standing alarm threads.** `async sweep: the harness could not produce a
+verdict` collects the nights the driver ran and could not stand behind the
+result; `async-sweep: the nightly job itself failed` collects the nights the job
+died before the driver could file. Healthy is a quiet tracker **beside green
+nightly runs**; a quiet tracker with no runs at all is the same silence, and the
+gap that still allows it — a timeout cancellation, which `failure()` does not
+fire on — is [#724](https://github.com/theurian/theurian/issues/724).
+
 ## MERGE — landing a branch
 
 - Run `gh pr list --state open --draft=false` at every transition — closing an
