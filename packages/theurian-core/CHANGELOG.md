@@ -16,13 +16,11 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ### Security
 
-<!-- cut: assign the advisory id (GHSA / CVE / release note) for the T-26 timing side-channel -->
-
 - **A read-surface timing side-channel let a caller infer a withheld item's
   existence and the approximate size of its body from the timing of its refusal**
-  (**HIGH.** The advisory id — a GHSA, a CVE, or a plain release note — is
-  assigned at the cut; T-26 in
-  [the threat model](../../docs/security/threat-model.md) carries the
+  (**HIGH.** The advisory id is
+  [GHSA-qg39-w622-q4xw](https://github.com/theurian/theurian/security/advisories/GHSA-qg39-w622-q4xw);
+  T-26 in [the threat model](../../docs/security/threat-model.md) carries the
   measurements). Live in shipped Core 0.2.2. Three read gates —
   `knowledge.get`, the relation-edge gate `_relation_is_visible`, and the search
   ranking gate `CanonicalVisibility._may_surface` — decide whether to surface an
