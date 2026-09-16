@@ -1,0 +1,111 @@
+# Theurian for Codex CLI
+
+> Invoke your engineering knowledge.
+
+Registers a Theurian daemon already running on your machine as a streamable HTTP
+MCP server for the Codex CLI, so a Codex session can search the specifications,
+decisions, and reviewed records your team keeps in Theurian.
+
+There is nothing to install here. One `codex mcp add` writes the entry, one
+`codex mcp remove` takes it away. Every command below was run against
+`codex-cli 0.154.0`.
+
+---
+
+## Before you start
+
+`theurian setup` must have completed on this machine. It is what puts a daemon
+on `127.0.0.1:7419` and writes one guarded block into `~/.theurian/env`
+(mode 0600) exporting `THEURIAN_MCP_TOKEN` from `~/.theurian/auth/mcp-token`
+([ADR-0011](../../docs/adr/0011-local-mcp-authentication.md)).
+
+Codex reads that variable out of its own environment, so the shell you launch
+Codex from has to have sourced it:
+
+```sh
+. ~/.theurian/env
+```
+
+Setup does not edit your shell profile. Putting that line in it is yours to do.
+
+## Register
+
+```sh
+codex mcp add theurian --url http://127.0.0.1:7419/mcp --bearer-token-env-var THEURIAN_MCP_TOKEN
+```
+
+That writes an `[mcp_servers.theurian]` table into `$CODEX_HOME/config.toml` —
+`~/.codex/config.toml` unless `CODEX_HOME` says otherwise:
+
+```toml
+[mcp_servers.theurian]
+url = "http://127.0.0.1:7419/mcp"
+bearer_token_env_var = "THEURIAN_MCP_TOKEN"
+```
+
+`--bearer-token-env-var` stores the variable's *name*. The token itself never
+enters the file, which is the point: config files get copied into gists, synced
+to dotfile repositories, and pasted into issues (ADR-0011).
+
+**Do not use the `-- <command>` form** that `codex mcp add --help` offers for
+stdio servers. A stdio server is spawned once per client, so several Codex
+sessions would mean several processes writing one SQLite database. The result is
+not slowness, it is corruption. One daemon serves them all over HTTP
+([ADR-0002](../../docs/adr/0002-single-local-daemon-over-streamable-http.md)).
+
+## Verify
+
+```sh
+codex mcp list
+```
+
+```text
+Name      Url                        Bearer Token Env Var  Status   Auth
+theurian  http://127.0.0.1:7419/mcp  THEURIAN_MCP_TOKEN    enabled  Bearer token
+```
+
+`codex mcp get theurian` prints the same entry in full, including the
+`streamable_http` transport.
+
+Then make a real call:
+
+```sh
+codex exec --approve-for-me "Use the theurian MCP server's project.list tool and list the project ids it returns. Do not run any shell commands."
+```
+
+```text
+mcp: theurian/project.list started
+mcp: theurian/project.list (completed)
+```
+
+`--approve-for-me` is load-bearing. Without it `codex exec` runs with approval
+policy `never`, and that same call ends `MCP tool call requires approval, but
+approval policy is never` without reaching the daemon. The flag approves it
+automatically and runs the session under the workspace-write sandbox.
+
+`project.list` is the right first call because it answers from the registry.
+`knowledge.search` needs built state, and until `theurian migrate apply` has run
+in the project it refuses with that command as the remedy.
+
+## Remove
+
+```sh
+codex mcp remove theurian
+```
+
+The entry, and nothing else: no daemon is stopped and no knowledge is deleted.
+Your team's knowledge lives in Git.
+
+## What this is not
+
+**A port of the Claude Code plugin.** That plugin runs a bounded health check at
+SessionStart and ships twelve `/theurian:*` commands. Neither is here; run
+`theurian doctor` and the `theurian` CLI directly.
+
+**A packaged plugin.** Codex 0.154.0 has a plugin and marketplace system —
+`codex plugin marketplace`, and `codex features list` reports `hooks` and
+`plugins` stable and enabled — and Theurian publishes nothing to it. Both
+absences are this integration's scope rather than a limit of Codex: registering
+a running daemon is one command, so this integration is this file, and it lives
+in the monorepo
+([ADR-0001](../../docs/adr/0001-monorepo-with-independent-artifacts.md)).
