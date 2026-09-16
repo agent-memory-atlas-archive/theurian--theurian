@@ -498,7 +498,9 @@ _INFRASTRUCTURE_NON_SERVING_MODULES: frozenset[str] = frozenset(
 #: The one file directly at the package root, ``theurian/__init__.py``: package
 #: metadata (``__version__``, ``__protocol_version__``) and the public-surface
 #: docstring, no I/O.
-_TOP_LEVEL_NON_SERVING_MODULES: frozenset[str] = frozenset({"__init__.py"})
+_TOP_LEVEL_NON_SERVING_MODULES: frozenset[str] = frozenset(
+    {"__init__.py", "probe_sweep_control.py"}
+)
 
 #: Whole-subtree acknowledgements: every ``.py`` file under each prefix, however
 #: many and whatever their name, is classified non-serving in one entry rather
