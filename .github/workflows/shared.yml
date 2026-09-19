@@ -206,7 +206,7 @@ jobs:
     if: needs.changes.outputs.docs == 'true'
     steps:
       - uses: actions/checkout@v7
-      - name: Relative links resolve
+      - name: Documentation links resolve
         run: |
           python3 - <<'PY'
           import pathlib, re, sys
@@ -214,6 +214,36 @@ jobs:
 
           root = pathlib.Path(".")
           link = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
+
+          # `mkdocs build --strict` warns on a relative link leaving `docs/`, so
+          # links out of `docs/` are written absolute in the form below. They
+          # name a path in this repository, so they resolve against the checkout
+          # with no network. Only `main`: `blob/<sha>` and `blob/<branch>` pin a
+          # historical state this checkout is not, so any such link stays
+          # skipped.
+          self_ref = re.compile(
+              r"https://github\.com/theurian/theurian/(?:blob|tree)/main/(.+)"
+          )
+
+          # `Path.exists()` re-raises an OSError outside CPython's ignored set
+          # -- ENAMETOOLONG for a component over NAME_MAX, measured -- and an
+          # uncaught one aborts the walk, so every link after the offender goes
+          # unchecked. A target this runner cannot even stat is a broken target.
+          def resolves(candidate):
+              try:
+                  return candidate.resolve().exists()
+              except OSError:
+                  return False
+
+          def names_a_file(path):
+              path = path.split("#")[0].split("?")[0]
+              # The URL promises a path *inside* this repository. A leading `/`
+              # makes `root / path` absolute and stats the runner's own
+              # filesystem instead -- `blob/main//etc/hosts` reported
+              # "resolves" -- and `..` walks out of the checkout the same way.
+              if path.startswith("/") or ".." in pathlib.PurePosixPath(path).parts:
+                  return False
+              return resolves(root / path)
 
           # This repository dogfoods Theurian, so `.theurian/knowledge/` at the
           # top of the tree holds its own corpus: verbatim, byte-frozen
@@ -254,16 +284,18 @@ jobs:
               for target in link.findall(md.read_text(encoding="utf-8")):
                   target = target.split(" ")[0]
                   if urlparse(target).scheme or target.startswith("#"):
+                      match = self_ref.fullmatch(target)
+                      if match and not names_a_file(match.group(1)):
+                          broken.append(f"{md}: {target}")
                       continue
-                  resolved = (md.parent / target.split("#")[0]).resolve()
-                  if not resolved.exists():
+                  if not resolves(md.parent / target.split("#")[0]):
                       broken.append(f"{md}: {target}")
           if broken:
-              print("::error::Broken relative links:")
+              print("::error::Broken documentation links:")
               for b in broken:
                   print(f"  {b}")
               sys.exit(1)
-          print("All relative links resolve.")
+          print("All documentation links resolve.")
           PY
 
   # The corpus under `.theurian/` is 27 verbatim snapshots of 26 documents
