@@ -3,8 +3,8 @@
 How Git review history becomes reusable team knowledge — and why the last step is
 always a human's.
 
-**The domain model is built; nothing collects into it yet.** `ReviewThread`,
-`PromotionGate` and `KnowledgeCandidate` live in
+**The domain model is built, and since slice B5 one producer fills it.**
+`ReviewThread`, `PromotionGate` and `KnowledgeCandidate` live in
 [`domain/review.py`](https://github.com/theurian/theurian/blob/main/packages/theurian-core/src/theurian/domain/review.py),
 and the promotion invariants below are held by three different mechanisms
 (ADR-0013, INV-7):
@@ -36,21 +36,34 @@ tool reads that store back under the untrusted-content safety triple. So `system
 `reviewIngestion: true` beside `reviewIngestionScope: "public-allowlisted"`,
 both pinned by `test_capabilities_report_what_is_and_is_not_built` — a statement
 about the callable surface and nothing wider, since no MCP tool spawns `gh` and
-a fetch stays an operator's act. What is still missing is everything after
-serving — `theurian ingest` reads local files only, and no code path generates
-a candidate. So the sections below that describe *collection* — the landing
-stages, classification, candidate generation, provider access and privacy
-handling — describe a **design**, not
-what runs today. Three parts of it are the exception and are named as such where
-they appear: the fetch half of the first stage, the landing half beside it, and
-the ingestion-time privacy control the landing gate applies. Collection is
+a fetch stays an operator's act. Slice B5 added the producer
+([ADR-0033](../adr/0033-knowledge-candidate-generation.md)):
+`application/candidate_generation.py` recomputes the promotion gate from the
+stored review record, verifies the caller's `fixCommit` against the local
+repository, and hands the candidate to the draft-only proposal facade — so **the
+only construction site is the candidate generator**, and what it produces is a
+proposal a human reviews. The same slice registered the
+`review.generateKnowledgeCandidate` MCP tool, so a wire call reaches it: it joins
+`knowledge.proposeChange` and `knowledge.generateMigrationDraft` behind the same
+`writeTools: true`, which answers whether a write-intent tool exists and not how
+many. What is still missing is the rest of collection —
+`theurian ingest` reads local files only. So the sections below that describe
+*collection* — the landing stages, classification, candidate generation,
+provider access and privacy handling — describe a **design**, not
+what runs today. Four parts of it are the exception and are named as such where
+they appear: the fetch half of the first stage, the landing half beside it, the
+ingestion-time privacy control the landing gate applies, and candidate
+generation. The fourth carries a bound: *Failure isolation* below describes a
+design in which generation may call a model, and the shipped generator calls
+none — ADR-0033 decision 1 puts the generalization in the calling agent's hands
+instead. Collection is
 [#479](https://github.com/theurian/theurian/issues/479)'s, designed in
 [ADR-0030](../adr/0030-github-review-ingestion-spawns-gh.md) and sliced there;
 [#368](https://github.com/theurian/theurian/issues/368) is the other arm of FR-V
 and builds no fetch path at all — it reads `Review-Finding:` trailers out of
 local git history ([ADR-0029](../adr/0029-review-findings-are-governed-knowledge.md)).
-Candidate generation (FR-V2, FR-V3) is out of ADR-0030's scope too, so nothing
-below is scheduled by this sentence alone.
+Candidate generation (FR-V2, FR-V3) was out of ADR-0030's scope and is
+ADR-0033's; nothing else below is scheduled by this sentence alone.
 
 ## Evidence is not knowledge
 
@@ -121,9 +134,12 @@ Comments are classified into the eleven categories from §21 of the brief:
 `reliability-rule`, `coding-convention`, `testing-rule`, `domain-rule`,
 `rejected-approach`, `known-exception`, `incident-prevention`.
 
-Classification is a hint that routes a candidate to the right knowledge kind and
-namespace. It is not a truth claim, and a misclassification costs a reviewer one
-correction — not a wrong rule in the knowledge base.
+Classification is a caller-supplied hint recorded on the candidate, not a router:
+it chooses neither the knowledge kind nor the namespace — those are the caller's
+own wire fields — and today it is not carried into the drafted proposal at all
+([#754](https://github.com/theurian/theurian/issues/754) tracks that). It is not
+a truth claim, and a misclassification costs a reviewer one correction — not a
+wrong rule in the knowledge base.
 
 ## The promotion gate
 
@@ -179,7 +195,23 @@ granting it.
 
 ## Failure isolation
 
-Candidate generation may need a model. Raw ingestion must not (FR-V5).
+**This section is design context, and one of its premises did not survive
+implementation.** It was written for a generation stage that may need a model;
+the shipped generator calls none, because
+[ADR-0033](../adr/0033-knowledge-candidate-generation.md) decision 1 put the
+generalization in the calling agent's hands. The isolation argument below stands
+as the reason the two stages are separate, and what the branch isolates today is
+the *caller's* availability rather than a model's.
+
+Raw ingestion must not need a model either way (FR-V5), and both halves are now
+structural rather than argued:
+`tests/integration/test_review_ingest_is_model_free.py` walks the built ingest
+pipeline and
+`tests/integration/test_candidate_generation_is_model_free.py` walks the
+candidate one, through the shared instrument `tests/model_free_walk.py`, each
+with planted-model controls and each carrying the same recorded bound — a
+provider reached through `getattr`, a factory looked up in a table, or an import
+one frame deeper than the walk descends is invisible to it.
 
 ```mermaid
 flowchart LR

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import StrEnum
 
 from theurian.domain.enums import (
     CandidateStatus,
@@ -233,20 +234,47 @@ class ReviewSubmission:
             )
 
 
+class FixCommitVerdict(StrEnum):
+    """What a repository answers about a caller-named ``fixCommit`` (ADR-0033 decision 3).
+
+    Three members because git answers three ways, and keeping them apart is the
+    *adapter's* business alone: ``PromotionGate.fix_commit_present`` is satisfied
+    by :attr:`VERIFIED` and by nothing else, and the two failures reach a caller
+    as one refusal -- which of them happened is a fact about the repository's
+    contents rather than about the request (decision 5). Collapsing them in the
+    service instead of in the type is what leaves that binding something a change
+    can break, rather than something the types make impossible to state.
+
+    Lives in the domain because the verification is an infrastructure adapter and
+    the service that reads the verdict is application code, which never imports
+    infrastructure (ADR-0003).
+    """
+
+    #: The commit exists here and touched the file the stored thread is anchored to.
+    VERIFIED = "verified"
+    #: Nothing here resolves to a commit under that name -- including the
+    #: fail-closed readings, where the repository could not be asked at all.
+    NO_SUCH_COMMIT = "no-such-commit"
+    #: The commit is here and touched nothing at the thread's path.
+    TOUCHES_NOTHING_HERE = "touches-nothing-here"
+
+
 @dataclass(frozen=True, slots=True)
 class PromotionGate:
     """The signals that decide whether a thread is worth a human's attention.
 
     This gate answers "should someone look at this?", never "is this true?".
-    Every field is an observed fact, so the decision is auditable rather than a
-    model's opinion (FR-V4).
+    Every field records what was observed rather than a model's opinion, so the
+    decision is auditable (FR-V4). ``ci_successful``'s ``None`` records that no
+    CI outcome was observed, which does not satisfy the gate (ADR-0033
+    decision 4).
     """
 
     pull_request_merged: bool
     thread_resolved: bool
     fix_commit_present: bool
     not_dismissed_or_outdated: bool
-    ci_successful: bool
+    ci_successful: bool | None
     generalizable: bool
     has_evidence: bool
 
@@ -305,7 +333,9 @@ class KnowledgeCandidate:
     #: Always ``INFERRED``. A candidate cannot claim review-level trust; that is
     #: precisely what a human reviewer would be granting it.
     trust_level: TrustLevel = field(default=TrustLevel.INFERRED, init=False)
-    #: Inherited from the review's project default; never widened at generation.
+    #: The candidate generator sets no ``sensitivity``, so a generated candidate is
+    #: always the type default ``INTERNAL`` and never widened at generation. There is
+    #: no review-project default; this is not read from one.
     sensitivity: Sensitivity = Sensitivity.INTERNAL
 
     def __post_init__(self) -> None:

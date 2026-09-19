@@ -2097,7 +2097,7 @@ other's blind spots.
   and `git fetch` reach the network without Theurian importing a client. It
   watches `subprocess`, the `os` spawn/exec family — `system`, `popen`, `spawn*`,
   `posix_spawn*` and `exec*` — and `asyncio.create_subprocess_*`, and permits
-  **five** sites. Four take no argument vector from a document: the `git`
+  **six** sites. Four take no argument vector from a document: the `git`
   context reads in `cli/context.py`; the service runner in
   `infrastructure/services/runner.py`; since ADR-0029's trailer source landed,
   `infrastructure/git/trailer_source.py`, which runs `git log` over the pinned
@@ -2122,11 +2122,80 @@ other's blind spots.
   operator's `gh` as `gh api graphql --hostname github.com` (ADR-0030). Its
   destination *does* come from configuration, which is exactly the moment SEC-10's
   repository allowlist stopped being owed and started running — see *Controls*
-  above. This entry said "two sites" and named the first two until 2026-09-02,
-  "three" until ADR-0030's adapter landed, and "four" until ADR-0034's committed
-  check landed; the pinned set (`PROCESS_SPAWN_SITES` in
-  `tests/unit/test_network_call_sites.py`) is what the count is held against, by
-  `test_threat_model_t7_claims.py`.
+  above.
+
+  **The sixth is the only one handed an argument a document supplies.** Since
+  ADR-0033's candidate generation landed, `infrastructure/git/fix_commit_check.py`
+  runs one command,
+  `git --literal-pathspecs log --no-walk --first-parent -m --name-only --format= -z --root --end-of-options <sha>^{commit} -- <file_path>`,
+  to answer whether a caller's `fixCommit` is a commit here that touched the
+  stored thread's `file_path`. Its two inputs are untrusted differently: the sha
+  is caller wire input, and the path is author-controlled stored data a clone can
+  deliver (T-24). **What keeps the sha from being a git revision expression is a
+  grammar funnel, not the spawn.** Before any process exists, the adapter refuses
+  a `fixCommit` that is not a full-length lower-case object name — forty hex
+  digits or sixty-four — with `re.fullmatch` of `[0-9a-f]{40}|[0-9a-f]{64}` at its
+  entry, and the published input schema carries the same pattern and a `maxLength`
+  on `fixCommit`; `tests/fix_commit_grammar.py` is the corpus both are asked. That
+  funnel is the CRITICAL control B5 round 1 added: without it `fixCommit` reached
+  git's revision language directly, and two reviewers independently recovered a
+  commit's message by sending a revision expression such as `HEAD^{/<text>}` in
+  place of a sha, making `fix_commit_present` answer to a description rather than a
+  commit id (the adapter's docstring records the exact forms). It is unchanged by
+  the later fixes and stays the first thing `verify` does.
+  **It is the `log` form because of the git-version floor.** Round 1 reached merge
+  commits with a single diff-tree call carrying a --diff-merges=first-parent
+  option, which is a git 2.31 feature; the documented floor is git 2.30
+  (`docs/contributing/development.md`), where that option errors and every valid
+  `fixCommit` was refused (round-2 HIGH-1). `log --no-walk --first-parent -m`
+  reaches the same merge commits on 2.30 and gives byte-identical verdicts, so the
+  diff-tree attempt is recorded here as history rather than as a live control.
+  **The verdict is a byte-membership check over NUL-delimited entries, and `-z` is
+  what ends the output-parsing family.** `-z` makes git emit its *machine* format:
+  each touched path as raw bytes, NUL-delimited, without quoting, line structure or
+  trailing decoration. `verify` splits git's raw stdout on the NUL byte, drops
+  empty entries only — never `.strip()` — and answers `VERIFIED` iff
+  `file_path.encode("utf-8")` is one of those byte entries, `TOUCHES_NOTHING_HERE`
+  otherwise, and a non-zero exit `NO_SUCH_COMMIT`. Every earlier stored-path face
+  was git's *human* rendering of a path read as text: round 1 credited
+  `--literal-pathspecs` with closing the class, but that flag only disables `:(…)`
+  *magic* and a literal directory pathspec (`docs`, `.`) still matched every file
+  beneath it (round-2 HIGH-2); round 2 then compared the stored path against
+  `--name-only` *lines*, which git quotes under `core.quotePath` for a non-ASCII,
+  quoted or control-character name, splits on an embedded newline, and which a
+  `.strip()` empties for a file named with a single space — each falsely refusing
+  an honest fix (round-3 HIGH). Reading the `-z` bytes as an exact set of raw path
+  entries and comparing them byte-identically closes quoting, line-splitting,
+  whitespace-stripping and pathspec breadth at once, because none of those survives
+  the machine format; `--literal-pathspecs` stays as defence in depth over the
+  magic half. The **encoding** face is in scope and fail-closed: a non-UTF-8 disk
+  path cannot equal a UTF-8-encoded anchor, so it is refused `TOUCHES_NOTHING_HERE`.
+  Pathname **normalization** — a byte-unequal NFC-versus-NFD anchor — is a
+  *separate* equality class, filed
+  [#758](https://github.com/theurian/theurian/issues/758), and is deliberately out
+  of this closure. The remaining tokens are graded rather than listed: `--root`
+  lets a repository's first commit be a fix; `--first-parent -m` make a merge
+  commit diffable against the branch it landed on, so a fix that landed as a
+  conflict resolution is not refused as touching nothing; `--end-of-options` guards
+  the token position the funnel has already emptied; and `--` keeps an
+  option-shaped stored `filePath` a pathspec. The call reaches no network and names
+  no remote (`log` reads local object storage), resolves `git` to an absolute path,
+  and bounds the spawn with `GIT_TIMEOUT_SECONDS`.
+  `tests/integration/test_fix_commit_check_adapter.py` captures the one vector at
+  the widest object name the grammar admits and a pathspec-expression stored path
+  and asserts the whole argv above, that the retired --diff-merges=first-parent
+  option is absent, the single spawn, the absolute binary, the per-call timeout,
+  and no shell; its behavioural arms drive the three verdicts, a first commit, a
+  first-parent merge, a stored directory that verifies nothing, an honest fix whose
+  filename is CJK, quoted, backslashed, newline-bearing, tab-bearing or a single
+  space — each verifying under `-z` where the human rendering refused — and a
+  non-UTF-8 disk path fail-closed against a UTF-8 anchor.
+
+  This entry said "two sites" and named the first two until 2026-09-02,
+  "three" until ADR-0030's adapter landed, "four" until ADR-0034's committed
+  check landed, and "five" until ADR-0033's fix-commit check landed; the pinned
+  set (`PROCESS_SPAWN_SITES` in `tests/unit/test_network_call_sites.py`) is what
+  the count is held against, by `test_threat_model_t7_claims.py`.
 - **The socket layer, behaviourally.**
   `test_parsing_a_hostile_document_opens_no_socket` watches
   `socket.create_connection`, `socket.socket` and `socket.getaddrinfo` while
@@ -3742,6 +3811,53 @@ first abstractive adapter (#115).
 > module is imported. A premise that has to stay true belongs in a test that
 > reddens, not in a sentence — recorded as unpinned here, with the argument
 > resting on the symbols rather than the module in the meantime.
+
+**The candidate path is the second route into this entry, added in Phase B slice
+B5** ([ADR-0033](../adr/0033-knowledge-candidate-generation.md)). Review text is
+untrusted content — a pull-request comment can say "ignore previous
+instructions" as easily as a knowledge body can — and
+`review.generateKnowledgeCandidate` turns a resolved thread into a knowledge
+proposal, which is precisely the path by which an injected instruction could
+become a candidate. It is the risk `docs/roadmap.md`'s Phase B row named as owed
+here. **No new control is added for it**; what follows is where the existing
+ones stand on this path.
+
+*Nothing a thread says is rendered into the proposal.*
+`application/candidate_generation.py`'s `CandidateGenerator.generate` builds the
+`KnowledgeCandidate` from the **submission**: `title`, `body`, `kind`,
+`category` and the source anchors are the caller's, and `generator_model` is the
+caller's declared `evidence.model`. What the stored record contributes is the
+gate's booleans and three identifiers — `thread.project_id`, and
+`thread.external_id` as `source_thread_id` and as half of `candidate_id`. No
+comment body reaches the candidate, and `_request` maps the candidate's own
+fields onto the `ProposalRequest`, so an instruction planted in a review comment
+cannot ride into a proposal as content.
+
+*Where thread text does reach an agent, it reaches it under the triple.*
+`review.search` is the surface that serves review rows, and
+`mcp/review_search.py` splats the same imported `SAFETY` object every knowledge
+result carries. One narrower path is named rather than denied: a gate refusal
+quotes the stored `filePath` into its prose and its cure, because a caller told
+the fix-commit signal is unmet needs to know which path the verification used.
+That value is author-controlled stored data (T-24) and crosses through
+`bounded_quote`, which escapes control characters and bounds the rendering
+before interpolation; the commit-verification cure deliberately keeps it out of
+the command a reader may paste.
+
+*A candidate is never approved knowledge.* It lands as an ordinary draft
+proposal through the draft-only facade, so FR-V4's human merges it or does not
+(ADR-0013, ADR-0032 decision 8) — a stronger position than the retrieval route
+this entry is graded on, where no human stands between the planted text and the
+agent.
+
+**The residual is this entry's own, one actor later.** An agent that reads a
+planted instruction out of `review.search` and writes it into the `title` and
+`body` it submits has produced a candidate saying what the attacker wanted, and
+Theurian cannot tell that from a fair generalization: deciding whether a
+generalization is a fair reading of the thread is what ADR-0033 assigns to
+FR-V4's human. The grade does not move, because the harm is the one already
+stated — an agent influenced by content it should have read as data — and the
+route adds a human approval rather than removing a control.
 
 **Residual risk:** **Theurian labels; it does not enforce.** An agent that
 ignores the label will be influenced. This is a shared responsibility with the
@@ -6469,8 +6585,9 @@ is yanked; the fix ships in 0.2.3.
 #### T-12 — An agent silently rewrites an approved decision (Tampering, High)
 
 **Controls:** no MCP tool reaches a write path for approved state — not behind a
-flag, not behind a permission. The two write-intent tools
-(`knowledge.proposeChange`, `knowledge.generateMigrationDraft`) emit proposal
+flag, not behind a permission. The three write-intent tools
+(`knowledge.proposeChange`, `knowledge.generateMigrationDraft`,
+`review.generateKnowledgeCandidate`) emit proposal
 files, and the control that holds "no tool reaches approved state" is a
 **structural** one: they are handed a draft-only facade
 (`application/draft_only_proposals.py`, ADR-0032 decision 8) whose reachable
@@ -7054,7 +7171,7 @@ entry is the face of a victim who **did** run it.
 | Control | What it covers here |
 | :-- | :-- |
 | SEC-15's triple on every served row (`contentClassification: untrusted-knowledge`, `mayContainInstructions: true`, `executable: false`) | attached at the row rather than per field, so a fabricated record carries it exactly as an ingested one does. The instruction it gives a client is **correct** for this content, which is the reason this entry is not graded higher |
-| No promotion path out of review evidence | `KnowledgeCandidate` is constructed nowhere in `src/` (pinned by `tests/unit/test_adr_0030_claims.py::test_nothing_in_the_shipped_package_constructs_a_knowledge_candidate`), so a fabricated record cannot become approved knowledge, cannot be indexed, and cannot be returned by `knowledge.search` or `knowledge.get` |
+| The promotion path out of review evidence ends at an unapproved proposal | Until ADR-0033's slice B5 this row said there was no such path at all, because nothing built a candidate. There is one now, so what it records is where the path stops. `KnowledgeCandidate` has exactly **one** construction site in `src/` — the candidate generator, `application/candidate_generation.py` (pinned by `tests/unit/test_adr_0030_claims.py::test_the_only_construction_site_of_a_knowledge_candidate_is_the_candidate_generator`, an equality over an AST scan of the shipped package with its own positive control). What that generator emits is an ordinary proposal file a human reviews, and a candidate is never auto-approved (FR-V4): `CandidateStatus` has no `AUTO_APPROVED` member and `KnowledgeCandidate` no `approve`, `promote` or `publish` attribute (`tests/unit/test_project_and_traceability.py::test_candidate_has_no_self_approval_method`), and `trust_level` is `field(init=False)`, so a construction naming one raises `TypeError` (`::test_a_candidate_cannot_be_constructed_with_a_trust_level`). The caller's `fixCommit` is verified against the local repository rather than believed (`infrastructure/git/fix_commit_check.py`, T-7's sixth spawn site above). **What this row used to close is now open and accepted**: the generator's other five gate signals are recomputed from the *stored record*, which is the artefact this entry is about, so a planted record satisfying them reaches a **draft proposal a human reads** — ADR-0033's *What this does not close* item 2 states it, and decision 3's verification is recorded as covering the wire path only. The bound is that it stops there: a proposal is not canonical state, so nothing indexes it and neither `knowledge.search` nor `knowledge.get` returns it until `theurian propose accept` moves it and the migration a human merges runs (T-15 records what `migrate apply` does and does not check). **Not pinned:** no test holds *a proposal is not indexed* as a property — the fact side above reaches the construction site, the auto-approval absence and the git vectors, and no further |
 | The surface no longer over-claims, and the population was derived rather than listed | the tool description and the response schema said the records were the ones `theurian review ingest` landed from public allowlisted repositories — and so, one layer down, did the served schema's own field descriptions, the domain record, the builder, the evidence record, the protocol page and this entry's T-6 sibling, each attributing a served value to that route without naming it. **The rule now, over every one of them:** a sentence asserting provenance or an ingestion guarantee for a field that can arrive clone-delivered either names the route it holds for, or says what the read actually checks — which is shape and the derived path, never authorship. The T-19 check is stated as being on the *store*, answering "did this installation build it" and never "who wrote the records" |
 | `reviewIngestionScope: "public-allowlisted"` is unaffected | it is a statement about *ingestion*, which really is allowlisted; it was never a statement about what is in `.theurian/review/`. Its published wording now says so itself rather than leaving a reader to take "every record it holds" as an inventory — the sentence names `theurian review ingest` as its subject on every surface that publishes or records the scope (`schemas/mcp/system-capabilities-response.schema.json`, `mcp/tools.py`, `docs/protocol/mcp-tools.md`, and ADR-0030 decision 2, where the correction is to the sentence and not to the decision) |
 
@@ -7064,8 +7181,12 @@ own honesty is what stands between a fabricated record and an agent that acts on
 it — which is assumption 4 of this document, the weakest one in it. It is the
 same shape as T-3, and it is graded **Medium** where T-3 is High for two reasons
 that are properties of this surface rather than preferences: the content never
-leaves the untrusted plane (the triple is unconditional and there is no promotion
-path), and no published value on this path is priced over records the caller did
+leaves the untrusted plane (the triple is unconditional, and the promotion path
+ADR-0033's slice B5 added ends at an unapproved proposal a human reads, whose
+title, body and evidence anchors are the *caller's* submission and not the
+stored record's text — the holds table above records what a planted record can
+still do, which is make an unearned thread clear the gate), and no published
+value on this path is priced over records the caller did
 not receive (T-17's class is inapplicable: `q` is a literal substring test with no
 score, term weight or collection statistic — ADR-0030 decision 6). **It is not a
 disclosure at all**: nothing withheld is published, and the damage is fabricated
@@ -7249,7 +7370,7 @@ fix.
 | T-21 | An alias key colliding with a live item id resolves a withheld item to an approved item's authority | I | Critical | Closed in 0.1.0.dev6 — non-resolving `get_item_exact` on the read gate, plus a whole-set write refusal (`AliasItemCollisionError`, `deprecated` exempt); ranked face held by T-18 (GHSA-vx8x-rjfj-9x54) |
 | T-22 | A canonical read's cost grows with the above-ceiling rows it withholds | I | Medium | Accepted residual, measured (0.20 µs/row on the scan, 0.54 µs/row on `knowledge.status`'s counts); flattening owned by [#338](https://github.com/theurian/theurian/issues/338), acceptance recorded on #119 |
 | T-23 | A revision's served content drifts under an unchanged revision id, and a stale index serves it past the gate | I | Critical | Closed in 0.1.0.dev13 — serve gate keyed on `served_content_hash(title, body)` both sides, `INDEX_SCHEMA_VERSION` 6 → 7 forced rebuild; a new face of the derived-state-trust class T-19 (GHSA-3f65-gr36-qqx8); leaf-excerpt only, the `raptorPath[].title` face stays the T-17a residual (GHSA-97q9-xxfg-33r6) |
-| T-24 | A repository ships its own `.theurian/review/` and a local build serves it as review history | T | Medium | Accepted residual, recorded. SEC-15's triple on every row and no promotion path out of the untrusted plane; the tool description and response schema state that the T-19 check is on the *store* and never on who wrote the records. Verifying evidence provenance is unowned, adjacent to [#575](https://github.com/theurian/theurian/issues/575) |
+| T-24 | A repository ships its own `.theurian/review/` and a local build serves it as review history | T | Medium | Accepted residual, recorded. SEC-15's triple on every row, and the promotion path out of the untrusted plane — ADR-0033's candidate generator, since slice B5 — ends at an unapproved proposal a human reads; the tool description and response schema state that the T-19 check is on the *store* and never on who wrote the records. Verifying evidence provenance is unowned, adjacent to [#575](https://github.com/theurian/theurian/issues/575) |
 | T-25 | An MCP error response names the operator's resolved filesystem layout | I | High | Closed in 0.2.0 — GHSA-923w-f36f-jcfq. Constant refusals interpolating nothing across both tool boundaries, executable cures from fixed vocabulary; pinned by the raise-site population test, the no-resolved-form response sweep and the executable-cure ratchet |
 | T-26 | A canonical read materialises a withheld item's body before the gate, so a refusal's timing carries the body's size | I | High | Closed in 0.2.3 — bodyless `get_item_metadata`/`get_item_exact_metadata` gate the three read paths (`knowledge.get`, `_relation_is_visible`, `_may_surface`) on the pointer row, the body read only once a row is surfaceable (GHSA-3f65 preserved). ADR-0032's write-intent surface adds a fourth consumer — `proposeChange`'s caller-scoped `current_revision` lookup — also body-free (`get_item_metadata`), closed on the write path at slice B4 (0.3.0) with a content-independent ~9 µs existence residual ~155× below the same floor. Size-independent **by construction**: `_ITEM_METADATA_SQL` projects only `knowledge_items` columns and materialises no body, pinned bidirectionally by the zero-body-read counters (`test_pre_gate_body_materialization.py`) and the explicit-column projection fact test (`test_gate_call_sites.py`, RED on a `SELECT *` or a revisions join — closing the counters' method-name-keyed blind spot). Corroborated out of band: refusal identical at 256 B and 8 MiB, ~175× below TB-1's 1.40 ms floor (work log 2026-09-16-t26-timing). A canonical-store body-materialisation channel, distinct from T-17a (derived-index statistics) and T-22 (a per-row count term, #338) |
 
