@@ -104,6 +104,43 @@ _AGGREGATION_POPULATION: Final = (
     "comparison, not as a second sample of the same judgement"
 )
 
+#: The keys `_raptor_section` drops from a full `build_report` call over the
+#: raptor arm's own runs -- shared verbatim by both arms (one corpus, one set
+#: of constants), so repeating them under `report["raptor"]` would be noise,
+#: not a second measurement. Everything else `build_report` ever publishes --
+#: `abstentionProbe` today, and a key neither arm's author has written yet --
+#: flows to both arms by default, which an allowlist of the current keys
+#: could not guarantee for the ones still to come.
+_RAPTOR_SECTION_DROPPED_KEYS: Final = frozenset({"corpusId", "kValues", "harnessConstants"})
+
+#: The raptor arm's own equality scope (Phase A slice S4c): everything
+#: `EQUALITY_SCOPE` names, plus the RAPTOR node-traversal gate a raptor build
+#: additionally exercises -- a matched summary node still has to clear
+#: `_may_surface` at every descended leaf before that leaf may surface
+#: (ADR-0008 decision 8's routing-only invariant), so this arm's equality
+#: queries exercise a second gate the base arm's own scope does not name.
+RAPTOR_EQUALITY_SCOPE: Final = (
+    "Query-time gate over draft/proposed rows admitted to the index by "
+    "--include-unapproved on both builds, plus the RAPTOR node-traversal "
+    "gate (ADR-0008 decision 8) between a matched summary node and the "
+    "leaves it may route to; every query in this section runs at default "
+    "flags (includeUnapproved=false)."
+)
+
+#: The raptor arm's own channel reason (Phase A slice S4c). `_CHANNEL_REASON`
+#: names `--include-unapproved` as the reachable condition, which is true of
+#: the base arm's own T-17a residual but under-describes this one: reaching
+#: it also needs `--raptor` (ADR-0008 decision 8, GHSA-97q9's `raptorPath`
+#: territory), so quoting the base string here would omit half of what makes
+#: this channel unreachable from the shipped default.
+_RAPTOR_CHANNEL_REASON: Final = (
+    "recorded channel, T-17a family and RAPTOR summary routing (ADR-0008 "
+    "decision 8, GHSA-97q9's raptorPath territory); not a disclosure finding "
+    "because includeUnapproved is a request parameter (not a grant) and the "
+    "Core is one-principal (#119); reachable only under the operator's "
+    "--include-unapproved AND --raptor build, absent from the shipped default."
+)
+
 
 @dataclass(frozen=True, slots=True)
 class HarnessConstants:
@@ -142,6 +179,20 @@ class QueryRun:
     #: corpus, limit) with the ordinary "full" run it exists to compare
     #: against, and `_find_run` must not confuse the two.
     include_unapproved: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class RaptorArm:
+    """The raptor-on arm's own measurements (Phase A slice S4c), bundled so
+    ``build_report``/``build_timings`` each take one extra parameter rather
+    than three -- ``runs``, ``census`` and ``build_costs`` always travel
+    together, one call to ``corpus_build.build_both(..., raptor=True)`` and
+    one query loop over it (``run.py``).
+    """
+
+    runs: Sequence[QueryRun]
+    census: Mapping[str, CorpusCensus]
+    build_costs: Mapping[str, IndexBuildCost]
 
 
 def probe_limits_for(
@@ -195,7 +246,18 @@ def build_report(
     constants: HarnessConstants,
     runs: Sequence[QueryRun],
     census: Mapping[str, CorpusCensus],
+    *,
+    raptor: RaptorArm | None = None,
 ) -> dict[str, Any]:
+    """Assemble the base arm's report, and -- when ``raptor`` is given -- the
+    raptor arm's own ``raptor`` section and the ``comparison`` block between
+    the two (Phase A slice S4c).
+
+    ``raptor.runs`` symmetric to ``runs``: the same enabled queries, against
+    the same corpora, at the same limits, with the same #787 abstention
+    probes -- the only variable the comparison isolates is the RAPTOR
+    forest's presence (``run.py`` is what keeps the two calls symmetric).
+    """
     queries_section: dict[str, Any] = {}
     for query in loaded.queries:
         if not query.enabled:
@@ -230,7 +292,137 @@ def build_report(
     probe_summary = _abstention_probe_summary(runs)
     if probe_summary is not None:
         report["abstentionProbe"] = probe_summary
+    if raptor is not None:
+        report["raptor"] = _raptor_section(loaded, constants, raptor.runs, raptor.census)
+        report["comparison"] = _comparison(
+            report["aggregated"],
+            report["raptor"]["aggregated"],
+            loaded.manifest.k_values,
+            # `-raptor`-suffixed, matching `build_timings`'s own `indexBuild`
+            # keys for these same builds -- a bare `full`/`clean` here would
+            # answer two different questions under one key (`indexBuild.full
+            # .nodes` is the BASE build's forest, always 0; this is the
+            # RAPTOR build's).
+            {f"{name}-raptor": cost.nodes for name, cost in raptor.build_costs.items()},
+        )
     return report
+
+
+def _raptor_section(
+    loaded: Corpus,
+    constants: HarnessConstants,
+    runs: Sequence[QueryRun],
+    census: Mapping[str, CorpusCensus],
+) -> dict[str, Any]:
+    """The raptor arm's per-query, equality and aggregate metrics (Phase A slice S4c).
+
+    Built by recursing into :func:`build_report` over the raptor arm's own
+    ``runs``/``census`` with no ``raptor`` of its own -- the same per-query,
+    equality and channel machinery the base arm uses, so the two can never
+    drift in shape, and a future ``build_report`` key reaches both arms
+    without this function naming it (:data:`_RAPTOR_SECTION_DROPPED_KEYS`).
+
+    Its ``equality.scope`` and ``equality.channel.reason`` are relabelled
+    after the recursive call returns, not threaded through
+    :func:`build_report` as parameters: the two strings are pure description,
+    read by nothing the counts depend on, and adding them as
+    :func:`build_report` arguments would grow that signature by two for a
+    value only this one caller ever varies. Its ``differingFields`` sets are
+    reported, not asserted, for a different reason than the base arm's own
+    ``EQUALITY_SCOPE`` gives: the two builds derive their forests over
+    different chunk populations, so node routing (ADR-0008 decision 8)
+    surfaces a different selection and ordering of APPROVED leaves on each
+    side -- a wider set here is expected rather than a regression. It is not
+    unapproved text reaching a default-flag response, and that is verified
+    rather than assumed: ``IndexStore._node_scope`` applies the same status
+    and sensitivity predicates to a summary node's own scope that a leaf
+    match clears, and
+    ``test_no_raptor_path_title_in_the_full_arms_default_response_leaks_an_unapproved_body``
+    (``tests/integration/tools/test_raptor_baseline.py``) drives a real
+    ``--raptor`` build and checks every ``raptorPath[].title`` a default-flag
+    response actually carries against the unapproved fixture bodies. Exactly
+    the channel ``_channel_summary`` already reports rather than gates on,
+    reused verbatim (only its ``reason`` changes) rather than widening the
+    base arm's own set-equality claim to cover it.
+    """
+    full = build_report(loaded, constants, runs, census)
+    section = {key: value for key, value in full.items() if key not in _RAPTOR_SECTION_DROPPED_KEYS}
+    section["equality"] = {**section["equality"], "scope": RAPTOR_EQUALITY_SCOPE}
+    section["equality"]["channel"] = {
+        **section["equality"]["channel"],
+        "reason": _RAPTOR_CHANNEL_REASON,
+    }
+    return section
+
+
+def _comparison(
+    base_aggregated: Mapping[str, Any],
+    raptor_aggregated: Mapping[str, Any],
+    k_values: Sequence[int],
+    raptor_build_nodes: Mapping[str, int],
+) -> dict[str, Any]:
+    """Raptor-on minus raptor-off, over the ``full``-corpus default-flag runs (decision 4: deltas
+    only, no judgment about whether a move is good or bad).
+
+    Every :func:`_aggregate_entries` family gets a delta -- ``recallAtK``,
+    ``mrr``, ``evidencePrecision``, ``abstentionAccuracy`` and
+    ``supersededKnowledgeErrorRate`` -- plus ``sampleCount`` as context (not a
+    delta: both arms measure the same population, so this is the shared
+    denominator a reader needs to weigh the others by, not a second number to
+    subtract). A block naming only two of five families would let a mover in
+    one of the other three go unpublished.
+
+    Both sides' ``byClass`` share one key set: the classes come from the same
+    loaded queries against the same judged corpus, RAPTOR only ever moving
+    which rows rank where. Every family follows :func:`_aggregate_entries`'s
+    own ``None``-for-empty-denominator convention -- a class or k either side
+    has no sample for stays out of the delta rather than reading as a false
+    zero.
+    """
+    return {
+        "byClass": {
+            name: _aggregate_delta(raptor_aggregated["byClass"][name], entry, k_values)
+            for name, entry in base_aggregated["byClass"].items()
+        },
+        "overall": _aggregate_delta(
+            raptor_aggregated["overall"], base_aggregated["overall"], k_values
+        ),
+        "nodes": dict(raptor_build_nodes),
+    }
+
+
+#: The `_aggregate_entries` families `_aggregate_delta` subtracts straight
+#: (every one but `recallAtK`, which is per-k and handled separately, and
+#: `sampleCount`, which is context rather than a delta).
+_DELTA_FAMILIES: Final = (
+    "mrr",
+    "evidencePrecision",
+    "abstentionAccuracy",
+    "supersededKnowledgeErrorRate",
+)
+
+
+def _aggregate_delta(
+    raptor_entry: Mapping[str, Any], base_entry: Mapping[str, Any], k_values: Sequence[int]
+) -> dict[str, Any]:
+    recall = {
+        str(k): delta
+        for k in sorted(k_values)
+        if (
+            delta := _delta(
+                raptor_entry["recallAtK"].get(str(k)), base_entry["recallAtK"].get(str(k))
+            )
+        )
+        is not None
+    }
+    deltas: dict[str, Any] = {
+        family: _delta(raptor_entry[family], base_entry[family]) for family in _DELTA_FAMILIES
+    }
+    return {"recallAtK": recall, **deltas, "sampleCount": base_entry["sampleCount"]}
+
+
+def _delta(raptor_value: float | None, base_value: float | None) -> float | None:
+    return None if raptor_value is None or base_value is None else raptor_value - base_value
 
 
 def _query_entry(
@@ -540,7 +732,24 @@ def build_timings(
     runs: Sequence[QueryRun],
     build_costs: Mapping[str, IndexBuildCost],
     repo_root: Path,
+    *,
+    raptor: RaptorArm | None = None,
 ) -> dict[str, Any]:
+    """The dated annex, over both arms when ``raptor`` is given.
+
+    A raptor query row shares ``(queryId, corpus, limit, includeUnapproved)`` with its base-arm
+    counterpart -- both arms' :class:`BuiltProject` are named ``"full"``/``"clean"`` (see
+    ``corpus_build.build_both``) -- so ``raptor`` is a fifth field on every row rather than a
+    fifth key in the tuple a caller might already be matching on.
+    """
+    index_build = {name: _cost_dict(cost) for name, cost in build_costs.items()}
+    if raptor is not None:
+        index_build.update(
+            {f"{name}-raptor": _cost_dict(cost) for name, cost in raptor.build_costs.items()}
+        )
+    tagged_runs = [(run, False) for run in runs] + [
+        (run, True) for run in (raptor.runs if raptor is not None else ())
+    ]
     return {
         "date": datetime.now(UTC).isoformat(),
         "commitSha": _commit_sha(repo_root),
@@ -548,17 +757,25 @@ def build_timings(
         "platform": platform.platform(),
         "pythonVersion": sys.version,
         "sqliteVersion": sqlite3.sqlite_version,
-        "indexBuild": {name: _cost_dict(cost) for name, cost in build_costs.items()},
+        "indexBuild": index_build,
         "queries": [
             {
                 "queryId": run.query_id,
                 "corpus": run.corpus,
+                "raptor": is_raptor,
                 "limit": run.limit,
                 "includeUnapproved": run.include_unapproved,
                 "latencyMs": round(run.latency_ms, 3),
             }
-            for run in sorted(
-                runs, key=lambda r: (r.query_id, r.corpus, r.limit, r.include_unapproved)
+            for run, is_raptor in sorted(
+                tagged_runs,
+                key=lambda pair: (
+                    pair[0].query_id,
+                    pair[0].corpus,
+                    pair[1],
+                    pair[0].limit,
+                    pair[0].include_unapproved,
+                ),
             )
         ],
     }
