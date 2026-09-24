@@ -163,9 +163,12 @@ class JudgementEntry:
 
 @dataclass(frozen=True, slots=True)
 class WithheldItemCoverage:
-    """One withheld-plane item's classification (ADR-0036, the gate-vs-census
-    derivation rule -- amended there to the three-clause partition below; the
-    amendment is landing on another PR and is cited here by ADR name only).
+    """One withheld-plane item's classification.
+
+    ADR-0036's derivation rule ("The derivation rule") states two clauses --
+    gate-tested and census-tested; see :func:`_check_no_disclosable_withheld_item`
+    for the third combination the rule excludes, refused before this
+    classification ever runs.
 
     ``is_gate_tested``: the item's final status is draft or proposed AND its
     final sensitivity sits within :data:`BUILD_CEILING_SENSITIVITIES` -- so it
@@ -175,10 +178,7 @@ class WithheldItemCoverage:
     rejected or deprecated, or its final sensitivity sits above the ceiling --
     either way it never reaches the index under either build flavor, so its
     absence from a response is a build-time property rather than evidence
-    about the query-time gate. The third combination -- final status approved
-    and within the ceiling -- is disclosable and never reaches this
-    classification: :func:`_check_no_disclosable_withheld_item` refuses the
-    corpus first.
+    about the query-time gate.
     """
 
     item_id: str
@@ -258,7 +258,11 @@ def _load_yaml(path: Path) -> Any:
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
-        raise CorpusError("file-readable", f"{path} could not be read: {exc}") from exc
+        raise CorpusError(
+            "file-readable",
+            f"{path} could not be read: {exc}. Ensure the corpus root at "
+            f"{path.parent} contains this file.",
+        ) from exc
     return yaml.safe_load(text)
 
 
@@ -276,7 +280,11 @@ def _load_migration_document(path: Path) -> dict[str, Any]:
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
-        raise CorpusError("file-readable", f"{path} could not be read: {exc}") from exc
+        raise CorpusError(
+            "file-readable",
+            f"{path} could not be read: {exc}. Add the file under {path.parent}, "
+            f"or remove its entry from manifest.yaml's migrations list.",
+        ) from exc
     try:
         return load_yaml_mapping(text)
     except (InputTooLargeError, yaml.YAMLError, ValueError) as exc:
@@ -541,10 +549,14 @@ def _final_status_and_sensitivity(
     replays visible-plane items through the same machinery.
 
     Final status is the last ``upsertRevision.metadata.status``, overridden by
-    a later ``deprecateItem`` -> ``deprecated``. Final sensitivity is the last
-    ``upsertRevision.metadata.sensitivity`` (default ``internal``, ADR-0027
-    decision 1's own default when a revision omits it), overridden by a later
-    ``changeSensitivity``.
+    a later ``deprecateItem`` -> ``deprecated``. Final sensitivity is
+    ``createItem.sensitivity`` (default ``internal``, ADR-0027 decision 1's own
+    default when the operation omits it), overridden by every later
+    ``upsertRevision.metadata.sensitivity`` (same default when that revision
+    omits it) and then by every later ``changeSensitivity`` -- matching
+    ``KnowledgeItem.sensitivity``, which ``MigrationEngine`` sets at create and
+    replaces wholesale on each later operation that touches it, never merging
+    with what came before.
     """
     status_by_item: dict[str, str] = {}
     sensitivity_by_item: dict[str, str] = {}
@@ -553,7 +565,9 @@ def _final_status_and_sensitivity(
             item_id = op.get("itemId")
             if item_id not in item_ids:
                 continue
-            if op["op"] == "upsertRevision":
+            if op["op"] == "createItem":
+                sensitivity_by_item[item_id] = op.get("sensitivity", DEFAULT_SENSITIVITY.value)
+            elif op["op"] == "upsertRevision":
                 metadata = op["metadata"]
                 status_by_item[item_id] = metadata["status"]
                 sensitivity_by_item[item_id] = metadata.get(
@@ -569,15 +583,16 @@ def _final_status_and_sensitivity(
 def _check_no_disclosable_withheld_item(manifest: Manifest, documents: dict[str, Any]) -> None:
     """No withheld-plane item may end up approved and within the build ceiling.
 
-    ADR-0036's gate-vs-census derivation rule is a three-clause partition
-    (the amendment landing on another PR, cited here by ADR name only):
-    gate-tested iff final status in {draft, proposed} and within the ceiling;
-    census-tested iff final status in {superseded, rejected, deprecated} or
-    above the ceiling. The third combination -- approved and within the
-    ceiling -- is excluded by no mechanism: the item is indexed and surfaced
-    at default flags exactly like any other approved item, so calling it
-    "census-tested" would be false. Refused here rather than given a third
-    label, so the classification below only ever partitions cleanly.
+    ADR-0036's derivation rule states two clauses: gate-tested iff final
+    status in {draft, proposed} and within the ceiling; census-tested iff
+    final status in {superseded, rejected, deprecated} or above the ceiling.
+    The third combination -- approved and within the ceiling -- is not a
+    clause of that rule: the item is indexed and surfaced at default flags
+    exactly like any other approved item, so calling it "census-tested" would
+    be false. This function is the ADR's separately documented
+    `withheld-item-disclosable` refusal, which runs before
+    :func:`_withheld_item_coverage` so that classification's own two clauses
+    partition cleanly.
     """
     withheld_item_ids = _withheld_item_ids(manifest, documents)
     status_by_item, sensitivity_by_item = _final_status_and_sensitivity(
@@ -590,7 +605,7 @@ def _check_no_disclosable_withheld_item(manifest: Manifest, documents: dict[str,
         if status in DEFAULT_SURFACEABLE_STATUSES and within_ceiling:
             raise CorpusError(
                 "withheld-item-disclosable",
-                f"withheld-plane item {item_id!r} has final status 'approved' and "
+                f"withheld-plane item {item_id!r} has final status {status!r} and "
                 f"final sensitivity {sensitivity!r}, within the build ceiling "
                 f"({BUILD_CEILING.value!r}) -- nothing excludes it from either "
                 f"build's index, so it is not a valid withheld-plane item. "
@@ -672,12 +687,13 @@ def _check_relevant_items_retrievable(
             )
         status = status_by_item.get(item_id)
         if status not in DEFAULT_SURFACEABLE_STATUSES:
+            surfaceable = ", ".join(sorted(DEFAULT_SURFACEABLE_STATUSES))
             raise CorpusError(
                 "relevant-item-unretrievable",
                 f"{item_id!r} is judged relevant but its final status is "
-                f"{status!r}, not 'approved', so a default-flags query never "
-                f"returns it. A relevant item must be approved, within the "
-                f"build ceiling, and visible-plane.",
+                f"{status!r}, not one of {surfaceable}, so a default-flags query "
+                f"never returns it. A relevant item must have one of those "
+                f"statuses, sit within the build ceiling, and be visible-plane.",
             )
         sensitivity = sensitivity_by_item.get(item_id, DEFAULT_SENSITIVITY.value)
         if Sensitivity(sensitivity) not in BUILD_CEILING_SENSITIVITIES:

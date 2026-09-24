@@ -1041,6 +1041,42 @@ def test_the_loader_refuses_a_migration_missing_its_api_version(tmp_path: Path) 
     assert refusal.rule == f"schema:migrations/{name}"
 
 
+def test_the_loader_refuses_a_manifest_declaring_a_migration_the_directory_lacks(
+    tmp_path: Path,
+) -> None:
+    """``file-readable`` had no driving test anywhere in the repository (#800):
+    the tag's only other hit is a tag-enumeration pin in
+    ``test_adr36_ratchet.py`` that proves the tag exists, not that the rule
+    fires. ``_written`` writes only the migrations ``corpus.migrations``
+    names, so a manifest entry with no matching tuple member never lands on
+    disk.
+    """
+    manifest = copy.deepcopy(CORPUS.manifest)
+    manifest["migrations"].append(
+        {"file": "01M9EV0000000000000000M999-ghost.yaml", "plane": "visible"}
+    )
+
+    refusal = _refusal(replace(CORPUS, manifest=manifest), tmp_path)
+
+    assert refusal.rule == "file-readable"
+
+
+def test_the_loader_refuses_a_missing_contract_file(tmp_path: Path) -> None:
+    """``file-readable`` has a second raise site, ``_load_yaml`` -- the one
+    that reads the corpus's own three contract files -- distinct from
+    ``_load_migration_document`` above. Written whole with ``_written``, then
+    one file removed from disk, so this drives that site rather than the one
+    the twin above already does.
+    """
+    _written(CORPUS, tmp_path)
+    (tmp_path / "queries.yaml").unlink()
+
+    with pytest.raises(harness_corpus.CorpusError) as excinfo:
+        harness_corpus.load_corpus(tmp_path)
+
+    assert excinfo.value.rule == "file-readable"
+
+
 def test_the_loader_refuses_a_manifest_listing_two_migrations_out_of_order(
     tmp_path: Path,
 ) -> None:
@@ -1739,3 +1775,35 @@ def test_the_two_folds_agree_on_a_constructed_history_the_fixture_does_not_hold(
     }
     assert {item: state["status"] for item, state in replayed.items()} == status
     assert {item: state["sensitivity"] for item, state in replayed.items()} == sensitivity
+
+
+def test_the_fold_credits_create_items_sensitivity_when_no_revision_overrides_it() -> None:
+    """The gap #801 named: a createItem-only item's sensitivity was invisible to
+    the fold, which then fell back to the schema default at every call site
+    instead of what createItem declared -- masked in the committed corpus
+    because every fixture item also carries a revision. Matches the real
+    engine: ``KnowledgeItem.sensitivity`` is set at create
+    (``MigrationEngine._create_item``) and stays there until something else
+    changes it; nothing else touches these two items.
+    """
+    migrations = (
+        (
+            "1M23BW8DJNKT2GJB31BMEYQP08-create-only.yaml",
+            {
+                "id": "1M23BW8DJNKT2GJB31BMEYQP08",
+                "operations": [
+                    {
+                        "op": "createItem",
+                        "itemId": "domain.create-only-confidential",
+                        "sensitivity": "confidential",
+                    },
+                    {"op": "createItem", "itemId": "domain.create-only-default"},
+                ],
+            },
+        ),
+    )
+
+    _status, sensitivity = _loader_fold(migrations)
+
+    assert sensitivity["domain.create-only-confidential"] == "confidential"
+    assert sensitivity["domain.create-only-default"] == SCHEMA_DEFAULT_SENSITIVITY

@@ -47,9 +47,15 @@ REPORT_PY = _HARNESS_DIR / "report.py"
 JUDGEMENTS_SCHEMA = _HARNESS_DIR / "schemas" / "judgements.schema.json"
 
 
-def _section(text: str, start_marker: str, end_marker: str) -> str:
-    """The substring between two stable, unique markers -- the ADR's own words."""
+def _section(text: str, start_marker: str, end_marker: str | None) -> str:
+    """The substring between two stable, unique markers -- the ADR's own words.
+
+    ``end_marker=None`` bounds the section at end of text, for a block with no
+    following heading or paragraph to end on.
+    """
     start = text.index(start_marker)
+    if end_marker is None:
+        return text[start:]
     end = text.index(end_marker, start)
     return text[start:end]
 
@@ -117,6 +123,18 @@ _S2_COMPLIANCE_END = "\nMeasured now, and reproducible from this ADR"
 _S4_COMPLIANCE_START = "Landed in Phase A slice S4 — the committed baseline and the advisory CI"
 _S4_COMPLIANCE_END = "\n**Nothing in this ADR is owed to a later phase"
 
+#: Amendment 2's block, appended after every marker above. It cites the pin
+#: that exercises the restated sensitivity clause, so it joins this population
+#: in the same commit that lands it rather than being hand-checked once. Ends
+#: at end of file, not at its closing paragraph's opening bold: Amendment 2 is
+#: the file's last section, with no following ``## `` heading, and bounding at
+#: the paragraph's own opening words left that paragraph's body -- where a
+#: cited test name would land -- outside the block (a code-review MEDIUM,
+#: PR #803 round two: a citation appended there would escape this population
+#: silently).
+_AMENDMENT_2_START = "## Amendment 2 — `createItem.sensitivity` is the base"
+_AMENDMENT_2_END: str | None = None
+
 #: A backtick-quoted test identifier, ``path::test_name`` or a bare
 #: ``test_name`` -- the two forms both blocks below actually use. Group 1 is
 #: the optional path prefix (``""`` for a bare citation, since ``findall``
@@ -124,7 +142,7 @@ _S4_COMPLIANCE_END = "\n**Nothing in this ADR is owed to a later phase"
 #: group).
 _CITED_TEST_NAME = re.compile(r"`(?:([\w./-]+)::)?(test_[A-Za-z0-9_]+)`")
 
-#: The three blocks the ADR cites test names by name from, each enforced
+#: The four blocks the ADR cites test names by name from, each enforced
 #: independently. S4a's #787 append landed a new citation inside rider 1's
 #: own amendment block (``_AMENDMENT_START``/``_RIDER_2_START``, pin 1a's
 #: bounds), and the S4b docs pass landed another inside the new S4 Compliance
@@ -134,11 +152,12 @@ _CITED_TEST_SECTIONS = (
     pytest.param(_S2_COMPLIANCE_START, _S2_COMPLIANCE_END, id="s2-compliance"),
     pytest.param(_AMENDMENT_START, _RIDER_2_START, id="rider-1-amendment"),
     pytest.param(_S4_COMPLIANCE_START, _S4_COMPLIANCE_END, id="s4-compliance"),
+    pytest.param(_AMENDMENT_2_START, _AMENDMENT_2_END, id="amendment-2"),
 )
 
 
 def _cited_test_citations(
-    start_marker: str, end_marker: str, adr_path: Path = ADR
+    start_marker: str, end_marker: str | None, adr_path: Path = ADR
 ) -> list[tuple[str, str]]:
     """Every ``(path, test name)`` pair one block of the ADR cites -- path
     ``""`` for a bare citation -- parsed from the ADR's own text.
@@ -211,11 +230,11 @@ def collected_test_node_ids() -> list[tuple[str, str]]:
 
 @pytest.mark.parametrize(("start_marker", "end_marker"), _CITED_TEST_SECTIONS)
 def test_every_test_name_cited_in_the_adrs_s2_compliance_block_collects(
-    start_marker: str, end_marker: str, collected_test_node_ids: list[tuple[str, str]]
+    start_marker: str, end_marker: str | None, collected_test_node_ids: list[tuple[str, str]]
 ) -> None:
     """A renamed, moved or deleted pin reddens the ADR's own citation record.
 
-    All three blocks name pins by their test function name -- some
+    All four blocks name pins by their test function name -- some
     path-qualified, most bare -- as the record of what each named claim is
     held by. A rename anywhere in ``tests/unit/tools/``,
     ``tests/integration/tools/`` or the product's own test tree would
@@ -223,11 +242,12 @@ def test_every_test_name_cited_in_the_adrs_s2_compliance_block_collects(
     unnoticed. A path-qualified citation is held to that exact path, not
     merely to a same-named test living anywhere in the tree -- a move that
     renamed no function would otherwise pass silently. Parametrized over all
-    three blocks rather than one shared scan: each was landed by a docs pass
+    four blocks rather than one shared scan: each was landed by a docs pass
     that appended a new citation outside every population this pin already
     covered -- rider 1's amendment block (id ``rider-1-amendment``, S4a) and
     the S4 Compliance block (id ``s4-compliance``, S4b) -- checked by hand,
     not by this pin, until each joined it. Exactly the check that rots.
+    Amendment 2 (id ``amendment-2``) joined in the commit that landed it.
     """
     citations = _cited_test_citations(start_marker, end_marker)
     assert citations, "the population must be non-empty, or this pin checks nothing"
@@ -311,6 +331,54 @@ def test_the_five_within_document_rule_names_the_adr_cites_are_live_corpuserror_
     assert missing == [], (
         f"the ADR cites {missing} as a CorpusError rule tag in tools/eval/corpus.py, "
         f"but no CorpusError there raises with that tag now -- it was renamed"
+    )
+
+
+# -- 1d: Amendment 2's restated clause carries both the createItem base and --
+#         DEFAULT_SENSITIVITY fallback halves --------------------------------
+
+#: Short, distinctive substrings of the restated sensitivity clause's own
+#: words -- not the whole enumerated item, so a copy-edit that keeps the
+#: substance but rewords around it does not falsely redden this. Checked
+#: against the flattened block since the enumerated item wraps mid-clause
+#: ("`DEFAULT_SENSITIVITY`\n   (`theurian.domain.migration`") at the ADR's
+#: own line width.
+_CREATEITEM_SENSITIVITY_IS_THE_BASE = "`createItem.sensitivity` — the base"
+_DEFAULT_SENSITIVITY_IS_THE_FALLBACK = (
+    "`DEFAULT_SENSITIVITY` (`theurian.domain.migration`, `internal` today) "
+    "when that operation omits the optional field"
+)
+
+
+def test_amendment_2s_restated_clause_carries_both_the_base_and_fallback_halves(
+    adr_path: Path = ADR,
+) -> None:
+    """Guards against Amendment 2 reverting to Amendment 1's no-base clause.
+
+    Amendment 2 corrected exactly this overclaim: Amendment 1's derivation
+    rule began the sensitivity fold at the first revision, so a member
+    created ``confidential`` and never revised read as the default,
+    ``internal``. The FACT side of that correction is pinned by
+    ``test_the_fold_credits_create_items_sensitivity_when_no_revision_overrides_it``
+    (``tests/unit/tools/test_corpus_fixture_consistency.py``), which reddens
+    if the fold's ``createItem`` branch is removed from the source. This pins
+    the PROSE side -- the restated clause reverting to revision-only wording
+    would leave the fold correct and the record wrong again, unnoticed, since
+    pin 1b only checks that the citations inside this block still collect.
+    """
+    block = _flatten(
+        _section(adr_path.read_text(encoding="utf-8"), _AMENDMENT_2_START, _AMENDMENT_2_END)
+    )
+
+    assert _CREATEITEM_SENSITIVITY_IS_THE_BASE in block, (
+        f"Amendment 2's block no longer names createItem.sensitivity as the "
+        f"sensitivity fold's base -- reverted toward Amendment 1's no-base "
+        f"wording (from {_AMENDMENT_2_START!r} through end of file)"
+    )
+    assert _DEFAULT_SENSITIVITY_IS_THE_FALLBACK in block, (
+        f"Amendment 2's block no longer names DEFAULT_SENSITIVITY as the "
+        f"base's fallback when createItem omits the optional field "
+        f"(from {_AMENDMENT_2_START!r} through end of file)"
     )
 
 
