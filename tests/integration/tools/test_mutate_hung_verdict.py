@@ -29,7 +29,21 @@ pytestmark = pytest.mark.integration
 _HANGING_UV = "#!/bin/sh\nexec sleep 300\n"
 
 # A hang that has already printed something before it was killed -- the
-# common case, and the one MEDIUM-2 says used to be thrown away.
+# common case, and the one MEDIUM-2 says used to be thrown away. #761: this
+# raced the harness's own timeout under lane contention -- scheduling delay
+# before the fake's first (and only) write could push that write past the
+# deadline, dropping the line 1 run in 8 (two independent measurements, PR
+# #765's round and window 3). A prior fix here tried repeating the write in
+# a loop; that does not remove the race, because `subprocess.run`'s timeout
+# kills the child the instant the deadline passes, so every write after the
+# first one that arrives too late is already chronologically after its own
+# death sentence -- more attempts do not create more chances. The two racy
+# tests below use a timeout (`timeout=5`) roughly an order of magnitude past
+# realistic scheduling jitter instead: the boundary is still exactly at the
+# deadline (a delay sweep off a fake prepended with `sleep D` kept through
+# D=4.5s and lost at D=5.5s, the same shape measured at `timeout=1`), so this
+# narrows the danger zone rather than closing it -- a multi-second delay,
+# never observed here, would still lose.
 _HANGING_UV_WITH_PARTIAL_OUTPUT = (
     "#!/bin/sh\nprintf 'tests/integration/test_x.py .....\\n'\nexec sleep 300\n"
 )
@@ -189,7 +203,7 @@ def test_run_suite_carries_partial_output_into_suitehungerror(
     _install(tmp_path, monkeypatch, _HANGING_UV_WITH_PARTIAL_OUTPUT)
 
     with pytest.raises(SuiteHungError) as excinfo:
-        _run_suite(tmp_path, _options(tmp_path, timeout=1), tmp_path / "uvcache")
+        _run_suite(tmp_path, _options(tmp_path, timeout=5), tmp_path / "uvcache")
 
     assert "tests/integration/test_x.py" in excinfo.value.output
 
@@ -211,7 +225,7 @@ def test_a_hung_mutation_surfaces_partial_output_in_the_outcome(
         label="hangs-with-output", path="target.py", old="VALUE = 1", new="VALUE = 2"
     )
 
-    outcome = _run_one(tmp_path, mutation, _options(tmp_path, timeout=1), tmp_path / "uvcache")
+    outcome = _run_one(tmp_path, mutation, _options(tmp_path, timeout=5), tmp_path / "uvcache")
 
     assert outcome.verdict == "HUNG"
     assert "tests/integration/test_x.py" in outcome.summary

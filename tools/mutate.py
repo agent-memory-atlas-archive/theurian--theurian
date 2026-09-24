@@ -68,15 +68,22 @@ The two are not interchangeable, which is why the prepared tree reports no
 verdict at all: it prints a path, never a KILLED or a SURVIVED. What you see
 inside a prepared tree is a lead. Turn it into a verdict on the verdict path.
 
-**Add ``--with-git`` to either mode when the question touches the corpus's
-four rules that need the source's object store** -- the corpus byte-identity
-pin, the root-corpus applicability test, and two rules in
-``test_git_trailer_source.py`` (the full, dated list is in
-``_lend_git_objects``'s docstring; only two of the four actually read a
-blob, the other two need ``ls-files``/refs). Without the flag every copy
-skips all four, so a mutation whose only killer is one of them reports
-SURVIVED with no sign the harness never ran the test that would have caught
-it. The cost is per-tree, not per-batch, and the durable figure is
+**Add ``--with-git`` to either mode when the question touches the population
+`_lend_git_objects`'s own docstring measures and dates.** That population is
+every test (or, for one module, the collection step itself) whose outcome
+under a gitless copy differs from its outcome under a ``--with-git`` twin of
+the same commit -- stated as a key and a command, not as a count, because the
+count has been wrong every time it was stated as one: four (2026-08-31), five
+(#679), seven (#788), each an honest hand-audit under a narrower key than the
+one above. Read `_lend_git_objects`'s docstring for the current,
+command-derived figure and what the population actually contains today.
+Without the flag, the population's *skip*-type members run nothing and report
+SURVIVED with no sign the harness missed the check; its *fail*-type members
+and the one module that cannot even be collected instead turn the unmutated
+control red, which correctly voids the batch, but only once someone reads
+that flag rather than the KILLED verdicts it produced (see
+`_lend_git_objects` for which is which). The cost of lending the objects is
+per-tree, not per-batch, and the durable figure is
 machine-independent -- ~104 KB of copied ``.git`` bytes (measured
 2026-08-31). The working copy itself is not: ~13 MB on a clean checkout,
 measured up to ~124 MB on a developer machine carrying other agents'
@@ -525,33 +532,86 @@ def _lend_git_objects(destination: Path) -> None:
     **Why a copy needs one at all.** ``_COPY_IGNORE`` drops ``.git`` and
     :func:`_record_population` hands the suite a path list instead, which is
     enough for every rule that reads a *path* or the bytes in the working tree.
-    It is not enough for a rule that reads a **blob**, and this suite has four
-    of them -- measured 2026-08-31 at f1b6711, ``pytest -rs`` inside a copy with
-    and without this flag, diffing which SKIPs disappear:
+    It is not enough for a rule that needs to ask git something a path list
+    cannot answer.
 
-    - ``test_dogfood_corpus_governance.py::test_every_pinned_body_is_byte_identical
-      _to_its_source_anchor_commit`` -- a committed body against
-      ``git cat-file blob <commitSha>:<filePath>``.
-    - ``test_root_corpus_applies.py::test_the_committed_root_corpus_applies
-      _cleanly_to_an_empty_store`` -- ``git ls-files`` confirming the migrations
-      directory holds nothing untracked, before applying the corpus through the
-      real engine.
-    - ``test_git_trailer_source.py::test_frozen_4c4a784_pins_the_parsed_corpus``
-      -- a second, independent blob read, pinning trailer counts parsed from a
-      frozen historical commit.
-    - ``test_git_trailer_source.py::test_live_origin_main_accounts_for_every
-      _trailer_loss_free`` -- reads ``refs/remotes/origin/main``. Its
-      availability inside a copy therefore depends on the *source*'s own fetch
-      state, not on this flag alone: a source with no ``origin`` remote-tracking
-      ref still skips it under ``--with-git``.
+    **The population, and how to re-derive it rather than recount it by hand.**
+    Three hand-audits (four members 2026-08-31, five at #679, seven at #788, all
+    under a narrower key than the one below) each missed members the next audit
+    found, which is why this docstring now states a *key* and a *command*
+    instead of a number to keep re-typing:
 
-    In a copy without this flag, each of the four reaches its own git-shaped
-    guard, sees the population came from the manifest (or finds no ``.git`` at
-    all), and **skips**. So a mutation whose only killer is one of the four --
-    an anchor repointed at another commit, a body re-pinned consistently in both
-    places, a frozen-corpus trailer count perturbed, a live-tip accounting
-    break -- comes back SURVIVED from a harness that never ran the test that
-    holds it, and the reader has no way to tell that verdict from a real one.
+    Key: every test node -- or, for a module that cannot even be collected, the
+    module itself -- whose outcome under a gitless ``--prepare-tree`` copy
+    differs from its outcome under a ``--with-git`` twin of the same commit.
+
+    Command: from a plain clone (``--with-git`` refuses inside a linked
+    worktree or a bare checkout), build one tree of each kind at the same
+    commit::
+
+        uv run python tools/mutate.py --prepare-tree --work-dir <bare-dir> \\
+            --file <f> --old <a> --new <b> --label bare
+        uv run python tools/mutate.py --prepare-tree --with-git --work-dir <git-dir> \\
+            --file <f> --old <a> --new <b> --label wg
+
+    then, having cleared each tree's ``__pycache__`` (a stale ``.pyc`` left from
+    an earlier run is a recorded source of a false verdict), run each with::
+
+        sh <dir>/tree-0/.mutate-run -q -rA --tb=no --continue-on-collection-errors
+
+    (the last flag matters: one member below is a collection error, and without
+    it pytest aborts before running anything else) and diff the PASSED / FAILED
+    / SKIPPED / ERROR lines.
+
+    Measured 2026-09-25, PR #802 -- 25 members:
+
+    - **Skip under the gitless tree, pass under ``--with-git`` (5):**
+      ``test_dogfood_corpus_governance.py::test_every_pinned_body_is_byte
+      _identical_to_its_source_anchor_commit`` (``git cat-file blob
+      <commitSha>:<filePath>``); ``test_root_corpus_applies.py::test_the
+      _committed_root_corpus_applies_cleanly_to_an_empty_store`` (``git
+      ls-files``); ``test_git_trailer_source.py::test_frozen_4c4a784_pins
+      _the_parsed_corpus`` (a second, independent blob read); and
+      ``test_premise_check_verification.py``'s two ``test_name`` pins (#788),
+      which check :func:`premise_verify.git_repository_present` before a
+      ``git grep`` they otherwise drive directly. A sibling in
+      ``test_git_trailer_source.py``, ``test_live_origin_main_accounts_for
+      _every_trailer_loss_free``, reads ``refs/remotes/origin/main`` and skips
+      under both trees in *this* measurement, because the clone this was
+      re-derived from carries no ``origin`` tracking ref -- its own guard
+      already states that dependency, so it stays a member on that word
+      rather than on this diff.
+    - **Fail under the gitless tree, pass under ``--with-git`` (19):**
+      ``test_port_count_row_claims.py``'s two ``git grep``/``git ls-files
+      --cached`` tests (#679) -- a bare ``assert completed.returncode in
+      (0, 1)``, not a git-shaped SKIP, so a gitless copy fails rather than
+      skips; four of ``test_phase0_exit_records.py``'s tests, each reading
+      ``git ls-files``/``git grep`` for an ADR, roadmap or README count with
+      no git-shaped guard of its own; five of ``test_corpus_fixture
+      _consistency.py``'s tests, reading tracked-path state to check the eval
+      corpus's source anchors and links; and 8 of ``test_census_audits_run
+      .py``'s 11 gitless failures (#527) -- the remaining 3 (``[sha_anchors]``
+      on all three parametrized functions) persist even under ``--with-git``,
+      a narrower and separate concern from #527's own scope, not fixed here.
+    - **Errors at collection under the gitless tree, collects under
+      ``--with-git`` (1):** ``tests/ci/test_core_paths_filter_covers_reads.py``
+      runs ``git ls-files`` at module scope with ``check=True``; a gitless
+      copy raises ``CalledProcessError`` there and pytest reports
+      "Interrupted: 1 error during collection" for the whole run, not a
+      per-test outcome the skip-or-fail taxonomy above had a word for.
+
+    In a copy without this flag: a mutation whose only killer is one of the
+    five *skip*-type members above comes back SURVIVED from a harness that
+    never ran the test that holds it, and the reader has no way to tell that
+    verdict from a real one. Every *fail*-type member and the collection error
+    instead set pytest's own exit code nonzero regardless of what mutation, if
+    any, is in the tree -- ``mutate_run._recognised_summary`` reads either
+    shape (``... failed ...`` or ``1 error in Ns``) as a real summary line, so
+    the *unmutated control* comes back red the same way, which
+    :func:`_verdict_mode` already treats as voiding every KILLED verdict in
+    that batch. The fail-type and collection-error members therefore cost a
+    batch rather than mislead about a mutation, and only once someone reads
+    the ``control-red`` flag rather than the KILLED verdicts underneath it.
 
     **Why objects are lent rather than copied.** Measured 2026-08-31, on two
     machines: a scratch clone and this machine's own checkout root both copy
@@ -586,13 +646,13 @@ def _lend_git_objects(destination: Path) -> None:
     if not git_dir.is_dir():
         raise HarnessError(
             f"--with-git needs a plain repository at {git_dir}; a linked worktree or a "
-            "bare checkout does not carry the index this lends. Drop --with-git and "
-            "accept that the four rules it unblocks (see this function's docstring) "
-            "skip, or run the batch from the plain checkout this worktree belongs to "
-            "-- its own committed history and its own working tree, not this "
-            "worktree's uncommitted or untracked changes. A fresh clone loses those "
-            "the same way `git worktree add HEAD` does (see this module's docstring), "
-            "so it is not offered here."
+            "bare checkout does not carry the index this lends. Two options: drop "
+            "--with-git and accept that the population it unblocks (this function's own "
+            "docstring measures and dates it) does not run; or run the batch from the "
+            "plain checkout this worktree belongs to -- its own committed history and "
+            "working tree, not a fresh clone or another worktree, both of which lose "
+            "whatever is uncommitted or untracked here (see this module's docstring), so "
+            "neither is offered as a substitute."
         )
 
     version_probe = _git_in_source("config", "--get", "core.repositoryformatversion")
@@ -610,8 +670,9 @@ def _lend_git_objects(destination: Path) -> None:
             "different object hash algorithm) and a reftable refs backend (plain SHA-1 "
             "objects, but refs stored outside refs/ and packed-refs) both do, and this "
             "hardcoded config would handle neither correctly. Drop --with-git and accept "
-            "that the four rules it unblocks (see this function's docstring) skip, or run "
-            "the batch against a repositoryformatversion=0 clone of this source instead."
+            "that the population it unblocks (this function's own docstring measures and "
+            "dates it) does not run, or run the batch against a "
+            "repositoryformatversion=0 clone of this source instead."
         )
 
     borrowed = destination / ".git"
@@ -949,9 +1010,10 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         "--with-git",
         action="store_true",
         help=(
-            "give each copy a .git that borrows the source's objects, so the four rules "
-            "that need the source's object store (corpus byte-identity, root-corpus "
-            "apply, and two test_git_trailer_source.py rules) run instead of skipping"
+            "give each copy a .git that borrows the source's objects, so the "
+            "population _lend_git_objects's docstring measures and dates runs for "
+            "real instead of skipping, failing, or -- for one module -- never "
+            "collecting"
         ),
     )
     parser.add_argument(

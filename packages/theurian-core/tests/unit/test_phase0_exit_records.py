@@ -82,6 +82,31 @@ CORE_PYPROJECT: Final = REPO_ROOT / "packages/theurian-core/pyproject.toml"
 #: header or the ``:--`` separator.
 _INDEX_ROW: Final = re.compile(r"^\| \[[0-9]{4}\]", re.MULTILINE)
 
+#: The same row, captured for its file and its Status column -- what #654's
+#: second face needs: the index and an ADR's own header can each spell
+#: "accepted" and disagree about which ADR is which (0034 read ``proposed``
+#: here while its own file read ``accepted``) with no pin catching it, because
+#: the row-count check above discards everything but the leading digits.
+#: The status group is the whole trimmed cell, not ``[a-z-]+``: this
+#: repository's own prescribed status for a superseded ADR (docs/adr/README.md
+#: "Changing a decision") is ``superseded by NNNN``, which a letters-and-hyphens
+#: class cannot match at all (round 1 M2).
+_INDEX_ROW_STATUS: Final = re.compile(
+    r"^\| \[[0-9]{4}\]\(([^)]+)\) \| [^|]+ \| *([^|]+?) *\|$", re.MULTILINE
+)
+
+#: An ADR's own first fact (``docs/adr/0000-adr-template.md``'s own first
+#: line). The whole rest of the line, not ``\S+``: the latter truncates
+#: ``superseded by NNNN`` to ``superseded``, the same class of miss as
+#: ``_INDEX_ROW_STATUS``'s old ``[a-z-]+`` (round 1 M2).
+_ADR_STATUS: Final = re.compile(r"^- Status: *(.+?) *$", re.MULTILINE)
+
+
+def _own_status(filename: str) -> str | None:
+    match = _ADR_STATUS.search((ADR_INDEX.parent / filename).read_text(encoding="utf-8"))
+    return match.group(1) if match else None
+
+
 #: The nav anchor pointing at the ADR index, and its visible label. #552 took the
 #: count out of that label (it now reads ``ADRs``, like its ``Roadmap`` and
 #: ``Threat model`` siblings) precisely so it cannot rot; this reads the label
@@ -198,6 +223,34 @@ def test_the_adr_index_table_lists_exactly_the_adr_files_it_ships() -> None:
         f"the ADR file set ({len(files)}) and the index table's rows "
         f"({len(index_rows)}) disagree: a decision landed as a file without a table "
         f"row, or a row outlives its file. Files: {sorted(files)}"
+    )
+
+
+def test_the_index_rows_status_column_agrees_with_each_adrs_own_header() -> None:
+    """The row count agreeing (above) says nothing about a row's *Status* column.
+
+    #654: 0030 stayed `proposed` in both places after it shipped; 0034
+    disagreed with itself -- `accepted` in its own header, `proposed` in the
+    row -- and nothing reddened for either shape, since a status word matching
+    the four-digit-row pattern above is not what the count compares.
+    """
+    index_rows = _INDEX_ROW.findall(ADR_INDEX.read_text(encoding="utf-8"))
+    status_rows = _INDEX_ROW_STATUS.findall(ADR_INDEX.read_text(encoding="utf-8"))
+
+    assert len(status_rows) == len(index_rows), (
+        f"{len(index_rows)} rows matched the row-count pattern above but only "
+        f"{len(status_rows)} matched the three-column shape this check reads a status "
+        f"from; the index table's own layout has changed and this pin no longer parses it"
+    )
+    mismatches = [
+        (filename, index_status, own_status)
+        for filename, index_status in status_rows
+        for own_status in [_own_status(filename)]
+        if own_status != index_status
+    ]
+    assert mismatches == [], (
+        f"the index table's Status column disagrees with the ADR's own Status header for "
+        f"(file, index says, file says): {mismatches}"
     )
 
 

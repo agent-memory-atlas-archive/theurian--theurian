@@ -7,13 +7,16 @@ for a rule that reads a **blob** --
 ``test_dogfood_corpus_governance.py::test_every_pinned_body_is_byte_identical_to_
 its_source_anchor_commit`` compares a committed body against ``git cat-file
 blob <commitSha>:<filePath>``, and a manifest has no blob to hand over. That
-rule is one of **four** measured to skip loudly in every ordinary
-``tools/mutate.py`` copy (#452's finding; ``_lend_git_objects``'s docstring in
-``tools/mutate.py`` carries the dated, named list -- the other three are
-``test_root_corpus_applies.py`` and two rules in
-``test_git_trailer_source.py``), so a mutation whose only killer is any one of
-them comes back SURVIVED with no sign that the harness never ran the rule that
-would have caught it.
+rule is one member of the population ``_lend_git_objects``'s docstring in
+``tools/mutate.py`` states as a key and a command rather than a count (#452's
+finding; three later hand-audits under narrower keys -- five at #679, seven
+at #788 -- each missed members the next one found, which is why that
+docstring no longer restates a number here for this file to go stale beside).
+Most of that population skips loudly in every ordinary ``tools/mutate.py``
+copy, so a mutation whose only killer is one of them comes back SURVIVED with
+no sign that the harness never ran the rule that would have caught it; the
+rest turn the control red instead of reporting SURVIVED, or -- one module --
+never collect at all.
 
 ``--with-git`` gives the copy its own ``.git``, borrowing the source's objects
 through ``objects/info/alternates`` rather than copying them, with ``HEAD``,
