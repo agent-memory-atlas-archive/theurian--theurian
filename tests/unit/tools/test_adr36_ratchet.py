@@ -100,35 +100,48 @@ def test_rider_1s_amendment_carries_both_the_asserted_and_recorded_channel_halve
     assert _RECORDED_CHANNEL in block
 
 
-# -- 1b: every test name cited in the ADR's S2 Compliance block collects -----
+# -- 1b: every test name cited in the ADR's S2 Compliance block AND rider 1's -
+#         amendment block collects -------------------------------------------
 
 _S2_COMPLIANCE_START = "Landed in Phase A slice S2 (`9cd9ee34`)"
 _S2_COMPLIANCE_END = "\nMeasured now, and reproducible from this ADR"
 
 #: A backtick-quoted test identifier, ``path::test_name`` or a bare
-#: ``test_name`` -- the two forms the S2 Compliance block actually uses.
-#: Group 1 is the optional path prefix (``""`` for a bare citation, since
-#: ``findall`` yields an empty string rather than ``None`` for a
-#: non-participating group).
+#: ``test_name`` -- the two forms both blocks below actually use. Group 1 is
+#: the optional path prefix (``""`` for a bare citation, since ``findall``
+#: yields an empty string rather than ``None`` for a non-participating
+#: group).
 _CITED_TEST_NAME = re.compile(r"`(?:([\w./-]+)::)?(test_[A-Za-z0-9_]+)`")
 
+#: The two blocks the ADR cites test names by name from, each enforced
+#: independently. S4a's #787 append landed a new citation inside rider 1's
+#: own amendment block (``_AMENDMENT_START``/``_RIDER_2_START``, pin 1a's
+#: bounds) -- a block only the S2 Compliance block's own pin was checking, so
+#: the new citation went unenforced and was verified by hand instead.
+_CITED_TEST_SECTIONS = (
+    pytest.param(_S2_COMPLIANCE_START, _S2_COMPLIANCE_END, id="s2-compliance"),
+    pytest.param(_AMENDMENT_START, _RIDER_2_START, id="rider-1-amendment"),
+)
 
-def _cited_test_citations(adr_path: Path = ADR) -> list[tuple[str, str]]:
-    """Every ``(path, test name)`` pair the ADR's S2 Compliance block cites --
-    path ``""`` for a bare citation -- parsed from the ADR's own text.
+
+def _cited_test_citations(
+    start_marker: str, end_marker: str, adr_path: Path = ADR
+) -> list[tuple[str, str]]:
+    """Every ``(path, test name)`` pair one block of the ADR cites -- path
+    ``""`` for a bare citation -- parsed from the ADR's own text.
     """
     text = adr_path.read_text(encoding="utf-8")
-    section = _section(text, _S2_COMPLIANCE_START, _S2_COMPLIANCE_END)
+    section = _section(text, start_marker, end_marker)
     return sorted(set(_CITED_TEST_NAME.findall(section)))
 
 
 def _collect_only() -> subprocess.CompletedProcess[str]:
     """One ``pytest --collect-only`` pass over every root the cited names live in.
 
-    One collection pass rather than one per name: collecting
-    ``packages/theurian-core/tests`` alone takes a few seconds, and this file
-    cites upward of a dozen names, one of them from that tree (the product's
-    own build-identity sibling test).
+    One collection pass rather than one per name (or per cited block):
+    collecting ``packages/theurian-core/tests`` alone takes a few seconds,
+    and this file cites upward of a dozen names across two blocks, one of
+    them from that tree (the product's own build-identity sibling test).
     """
     return subprocess.run(  # noqa: S603 - argv is module-owned, never user input
         [
@@ -168,41 +181,56 @@ def _collected_node_id_components(stdout: str) -> list[tuple[str, str]]:
     return components
 
 
-def test_every_test_name_cited_in_the_adrs_s2_compliance_block_collects() -> None:
-    """A renamed, moved or deleted pin reddens the ADR's own compliance record.
-
-    The ADR's S2 Compliance section names pins by their test function name --
-    some path-qualified, most bare -- as the record of what each named claim
-    is held by. Nothing recomputed that until this pin: a rename anywhere in
-    ``tests/unit/tools/``, ``tests/integration/tools/`` or the product's own
-    test tree left the ADR's citation pointing at a test that no longer
-    exists, and nothing noticed. A path-qualified citation is held to that
-    exact path, not merely to a same-named test living anywhere in the tree
-    -- a move that renamed no function would otherwise pass silently.
+@pytest.fixture(scope="module")
+def collected_test_node_ids() -> list[tuple[str, str]]:
+    """One collection pass, shared by every citation population below -- running
+    it once per parametrized block instead of once overall would double the
+    cost of ``_collect_only`` for no new signal.
     """
-    citations = _cited_test_citations()
-    assert citations, "the population must be non-empty, or this pin checks nothing"
-
     collected = _collect_only()
     assert collected.returncode in {0, 5}, (
         f"pytest --collect-only exited {collected.returncode}, neither a clean "
         f"collection (0) nor a legitimately empty one (5) -- a collection error "
         f"would make the missing-name check below pass vacuously:\n{collected.stderr}"
     )
-    components = _collected_node_id_components(collected.stdout)
+    return _collected_node_id_components(collected.stdout)
+
+
+@pytest.mark.parametrize(("start_marker", "end_marker"), _CITED_TEST_SECTIONS)
+def test_every_test_name_cited_in_the_adrs_s2_compliance_block_collects(
+    start_marker: str, end_marker: str, collected_test_node_ids: list[tuple[str, str]]
+) -> None:
+    """A renamed, moved or deleted pin reddens the ADR's own citation record.
+
+    Both blocks name pins by their test function name -- some path-qualified,
+    most bare -- as the record of what each named claim is held by. A rename
+    anywhere in ``tests/unit/tools/``, ``tests/integration/tools/`` or the
+    product's own test tree would otherwise leave a citation pointing at a
+    test that no longer exists, unnoticed. A path-qualified citation is held
+    to that exact path, not merely to a same-named test living anywhere in
+    the tree -- a move that renamed no function would otherwise pass
+    silently. Parametrized over both blocks rather than one shared scan: the
+    S4a docs append that landed a citation inside rider 1's amendment block
+    (id ``rider-1-amendment``) was checked by hand, not by this pin, until it
+    covered that block too -- exactly the check that rots.
+    """
+    citations = _cited_test_citations(start_marker, end_marker)
+    assert citations, "the population must be non-empty, or this pin checks nothing"
 
     missing: list[str] = []
     for path, name in citations:
         if path:
-            if (path, name) not in components:
+            if (path, name) not in collected_test_node_ids:
                 missing.append(f"{path}::{name}")
         else:
             pattern = re.compile(rf"\b{re.escape(name)}\b")
-            if not any(pattern.search(collected_name) for _, collected_name in components):
+            if not any(
+                pattern.search(collected_name) for _, collected_name in collected_test_node_ids
+            ):
                 missing.append(name)
     assert missing == [], (
-        f"the ADR's S2 Compliance block cites {missing} by name, and pytest's "
-        f"collection over tests/unit/tools, tests/integration/tools and "
+        f"the ADR cites {missing} by name, and pytest's collection over "
+        f"tests/unit/tools, tests/integration/tools and "
         f"packages/theurian-core/tests contains no test with that name -- it was "
         f"renamed, moved or deleted without the ADR's record moving with it"
     )
@@ -284,6 +312,7 @@ EXPECTED_QUERY_METRIC_KEYS = frozenset(
         "forbiddenPresent",
         "abstentionCorrect",
         "forbiddenPresentCause",
+        "abstentionCause",
     }
 )
 
@@ -331,17 +360,30 @@ def _query_metrics_key_set() -> frozenset[str]:
 
 
 def test_the_787_tripwire_published_per_query_metric_key_set_equals_todays_expected_set() -> None:
-    """PURPOSE: designed to go RED when #787's channel-report member lands.
+    """Not a frozen contract -- a deliberate tripwire, and #787 has already
+    tripped it once (past tense, corrected: the ADR now records both members
+    implemented, not owed).
 
-    This is not a frozen contract -- it is a deliberate tripwire. #787 owns
-    landing a new report field that reports the collection-statistics
-    channel Amendment 1's rider 1 records as unasserted (a count, not an
-    equality). The moment that field's key appears in
-    ``report._query_metrics``, this reddens, and that RED is the signal to
-    move ADR-0036's "recorded channel, reported with a count" sentence from
-    *owed* to *implemented* and update :data:`EXPECTED_QUERY_METRIC_KEYS` in
-    the same commit. Staying green after #787 lands would mean the ADR's
-    record silently fell out of sync with what the harness actually publishes.
+    The tripwire's originally stated target -- the collection-statistics
+    channel Amendment 1's rider 1 recorded as unasserted -- landed as
+    ``equality.channel``, a member of ``build_report``'s own return dict built
+    by ``_channel_summary``, never a key ``_query_metrics`` writes. This
+    tripwire, scoped to ``_query_metrics``'s own AST (see
+    :func:`_query_metrics_key_set`), could never have caught it landing --
+    that claim was wrong from the start. What actually tripped it was
+    ``abstentionCause``, #787's other member and a genuine per-query key,
+    added to :data:`EXPECTED_QUERY_METRIC_KEYS` in the same commit that
+    introduced it (5955989a), the owed-to-implemented signal this file's own
+    module docstring describes. ``equality.channel`` is held instead by
+    ``test_the_equality_channel_summary_carries_the_787_reason_verbatim_and_the_measured_counts``
+    (``tests/integration/tools/test_harness_pins.py``), a section-level pin
+    outside this snapshot's reach.
+
+    The snapshot now guards whichever per-query key ``_query_metrics`` gains
+    next: the moment one appears here uninvited, this reddens, and that RED
+    is the signal to decide -- in the same commit -- whether the new key
+    belongs in :data:`EXPECTED_QUERY_METRIC_KEYS` and whether some ADR
+    sentence needs to move with it.
     """
     assert _query_metrics_key_set() == EXPECTED_QUERY_METRIC_KEYS
 
@@ -431,15 +473,20 @@ def _synthetic_report() -> dict[str, Any]:
     UNIT-weight instrument: a genuine call into the module under test, not a
     guess about its shape, and no SQLite or subprocess required to make it.
 
-    Two queries, not one: a single-corpus query alone never takes
-    ``report.py``'s conditional branches -- the ``forbiddenPresentCause``
-    cause, the ``atEqualityLimit`` wrapper key, or the equality section's own
-    ``limit``/``differingFields``/``atLimit`` keys -- so a verdict key added
+    Three queries, not one: a single-corpus, non-abstention query alone never
+    takes ``report.py``'s conditional branches -- the ``forbiddenPresentCause``
+    cause, the ``atEqualityLimit`` wrapper key, the equality section's own
+    ``limit``/``differingFields``/``atLimit`` keys, or ``abstentionCause`` and
+    its sibling top-level ``abstentionProbe`` member -- so a verdict key added
     only inside one of them could hide from the no-verdict-key scan below by
     simply never being built. ``q-equality`` runs against ``("full",
     "clean")`` to take the equality branches; ``q``'s forbidden item is
     classified census-tested in ``withheld_coverage`` to take the
-    ``forbiddenPresentCause`` branch. The reach test below checks this
+    ``forbiddenPresentCause`` branch; ``q-abstention`` pairs an empty
+    default-flags ``full`` response with an ``include_unapproved=True`` probe
+    run at the same limit (the NEW per-limit shape, e49c6520) returning a hit,
+    so ``_abstention_cause`` takes its gate-earned branch and ``build_report``
+    gains its ``abstentionProbe`` member. The reach test below checks this
     premise rather than assuming it.
     """
     manifest = harness_corpus.Manifest(
@@ -460,6 +507,9 @@ def _synthetic_report() -> dict[str, Any]:
         enabled=True,
         corpora=("full", "clean"),
     )
+    abstention_query = harness_corpus.QueryEntry(
+        id="q-abstention", query_class="unknown", query="text", enabled=True, corpora=("full",)
+    )
     base_judgement = harness_corpus.JudgementEntry(
         query_id="q",
         relevant=(harness_corpus.JudgedItem(item_id="a"),),
@@ -474,6 +524,13 @@ def _synthetic_report() -> dict[str, Any]:
         forbidden=(),
         expect_abstention=False,
     )
+    abstention_judgement = harness_corpus.JudgementEntry(
+        query_id="q-abstention",
+        relevant=(),
+        evidence=(),
+        forbidden=(),
+        expect_abstention=True,
+    )
     withheld_coverage = (
         harness_corpus.WithheldItemCoverage(
             item_id="w",
@@ -485,8 +542,8 @@ def _synthetic_report() -> dict[str, Any]:
     loaded = harness_corpus.Corpus(
         root=Path(),
         manifest=manifest,
-        queries=(base_query, equality_query),
-        judgements=(base_judgement, equality_judgement),
+        queries=(base_query, equality_query, abstention_query),
+        judgements=(base_judgement, equality_judgement, abstention_judgement),
         withheld_coverage=withheld_coverage,
     )
     constants = harness_report.HarnessConstants(
@@ -498,6 +555,7 @@ def _synthetic_report() -> dict[str, Any]:
         build_ceiling="internal",
     )
     response: dict[str, Any] = {"count": 1, "results": [{"itemId": "a", "sourceAnchors": []}]}
+    empty_response: dict[str, Any] = {"count": 0, "results": []}
     runs = [
         harness_report.QueryRun(
             query_id="q", corpus="full", limit=10, response=response, latency_ms=1.0
@@ -514,6 +572,21 @@ def _synthetic_report() -> dict[str, Any]:
         harness_report.QueryRun(
             query_id="q-equality", corpus="clean", limit=50, response=response, latency_ms=1.0
         ),
+        harness_report.QueryRun(
+            query_id="q-abstention",
+            corpus="full",
+            limit=10,
+            response=empty_response,
+            latency_ms=1.0,
+        ),
+        harness_report.QueryRun(
+            query_id="q-abstention",
+            corpus="full",
+            limit=10,
+            response=response,
+            latency_ms=1.0,
+            include_unapproved=True,
+        ),
     ]
     census = {
         "full": harness_corpus.CorpusCensus(
@@ -528,10 +601,21 @@ def _synthetic_report() -> dict[str, Any]:
 
 #: Keys ``report.py`` only builds inside a conditional branch: the
 #: ``forbiddenPresentCause`` cause, the equality-query ``atEqualityLimit``
-#: wrapper, and the equality section's own ``limit``/``differingFields``/
-#: ``atLimit`` keys. A one-query, single-corpus fixture takes none of them.
+#: wrapper, the equality section's own ``limit``/``differingFields``/
+#: ``atLimit`` keys, ``abstentionCause`` (#787's gate-earned annotation), and
+#: its sibling top-level ``abstentionProbe`` member (built only when some
+#: ``QueryRun`` carries ``include_unapproved=True``). A one-query,
+#: single-corpus, non-abstention fixture takes none of them.
 _BRANCH_REACH_MARKERS = frozenset(
-    {"forbiddenPresentCause", "atEqualityLimit", "limit", "differingFields", "atLimit"}
+    {
+        "forbiddenPresentCause",
+        "atEqualityLimit",
+        "limit",
+        "differingFields",
+        "atLimit",
+        "abstentionCause",
+        "abstentionProbe",
+    }
 )
 
 

@@ -32,6 +32,7 @@ if str(_HARNESS_DIR) not in sys.path:
 import corpus as harness_corpus  # noqa: E402
 import corpus_build as harness_build  # noqa: E402
 import metrics as harness_metrics  # noqa: E402
+import report as harness_report  # noqa: E402
 import run as harness_run  # noqa: E402
 from wire import ToolCall, mcp_session  # noqa: E402
 
@@ -496,3 +497,321 @@ def test_census_mismatch_rule_refuses_a_manifest_whose_census_disagrees_with_a_r
         harness_build.build_both(loaded, Path(workspace_name))
 
     assert excinfo.value.rule == "census-mismatch"
+
+
+# -- F: #787's abstention-cause flag-probe and the equality channel summary --
+
+
+@pytest.fixture(scope="module")
+def smoke_run() -> tuple[dict[str, Any], dict[str, Any]]:
+    """One ``harness_run.main`` build over the smoke corpus, both artifacts --
+    shared by every read-only assertion in this section that needs
+    ``report.json``, ``timings.json``, or both. These check what one run
+    says, not whether two runs agree (the byte-identity pin above is that
+    check).
+    """
+    with tempfile.TemporaryDirectory(prefix="theurian-eval-smoke-report-") as out_name:
+        code = harness_run.main(["--corpus", str(SMOKE_CORPUS), "--out", out_name])
+        assert code == 0
+        report: dict[str, Any] = json.loads((Path(out_name) / "report.json").read_text())
+        timings: dict[str, Any] = json.loads((Path(out_name) / "timings.json").read_text())
+        return report, timings
+
+
+@pytest.fixture(scope="module")
+def smoke_report(smoke_run: tuple[dict[str, Any], dict[str, Any]]) -> dict[str, Any]:
+    return smoke_run[0]
+
+
+def test_abstention_cause_marks_the_gate_earned_sample_and_leaves_its_clean_counterpart_bare(
+    smoke_report: dict[str, Any],
+) -> None:
+    """#787's flag-probe, read over ``withheld-incident-key``'s own two planes.
+
+    ``full``'s default-flags call returns nothing while the flagged probe
+    reaches the draft row (the reach control
+    ``test_the_default_flag_gate_hides_the_draft_row_the_include_unapproved_flag_reveals``
+    proves that same reach) -- gate-earned, so ``abstentionCause`` states it,
+    pinned by exact equality against the module's own constant. ``clean``
+    abstains for the unrelated reason that it never held the row at all
+    under either flag, but the probe is scoped to ``full`` alone
+    (``_abstention_probe_response``), so ``clean``'s entry -- also correctly
+    abstaining -- must carry no cause.
+    """
+    corpora = smoke_report["queries"]["withheld-incident-key"]["corpora"]
+
+    assert corpora["full"]["abstentionCorrect"] is True
+    assert corpora["full"]["abstentionCause"] == harness_report._ABSTENTION_GATE_WITHHELD
+    assert corpora["clean"]["abstentionCorrect"] is True
+    assert "abstentionCause" not in corpora["clean"]
+
+
+def test_abstention_cause_never_appears_on_a_query_that_does_not_expect_abstention(
+    smoke_report: dict[str, Any],
+) -> None:
+    """A judgement that never expects abstention leaves ``abstentionCorrect``
+    at ``None``, and ``_abstention_cause``'s guard reads ``None`` as much
+    "not True" as ``False`` -- checked over two different query classes
+    (exact-decision, superseded), not just one.
+    """
+    for query_id in ("token-rotation-policy", "cache-invalidation-current"):
+        entry = smoke_report["queries"][query_id]["corpora"]["full"]
+        assert entry["abstentionCorrect"] is None
+        assert "abstentionCause" not in entry
+
+
+def test_an_abstention_query_that_returns_a_hit_of_its_own_is_not_mislabeled_gate_earned(
+    smoke_report: dict[str, Any],
+) -> None:
+    """``mainframe-disaster-recovery`` shares no vocabulary with anything in the
+    smoke corpus (measured: none of "mainframe", "disaster" or "recovery"
+    appears anywhere under ``knowledge/``), yet the smoke corpus's default
+    plane holds only three approved items and ranking still returns all
+    three at default flags -- ``abstentionCorrect`` is measured ``False``
+    here, a genuinely wrong abstention rather than an absence-earned or
+    gate-earned one. ``_abstention_cause`` reads ``correct`` before it ever
+    reads the probe, so this wrong outcome must not read as gate-earned even
+    though the flagged probe (run for every ``expectAbstention`` judgement)
+    does add the withheld runbook to this same query's hit set.
+    """
+    entry = smoke_report["queries"]["mainframe-disaster-recovery"]["corpora"]["full"]
+
+    assert entry["abstentionCorrect"] is False
+    assert "abstentionCause" not in entry
+
+
+#: A literal copy of ``report._CHANNEL_REASON``'s value, not a reference to
+#: the constant itself. Comparing the module's published ``reason`` against
+#: the SAME constant that produced it is structurally unfailable: an
+#: adversarial mutation replacing ``_CHANNEL_REASON``'s wording with a
+#: "single-user" paraphrase (specifically wrong -- the daemon serves many
+#: agents, #119) survived 78/78 against the constant-referencing form, since
+#: both sides of the comparison read the mutated value. This literal is the
+#: canonical test-side site for that rationale: the literal is the pin's own
+#: authority, and drifting ``_CHANNEL_REASON`` now diverges from the copy
+#: below and reds, whatever the constant says.
+_CHANNEL_REASON_LITERAL = (
+    "recorded channel, T-17a family; not a disclosure finding because "
+    "includeUnapproved is a request parameter (not a grant) and the Core is "
+    "one-principal (#119); reachable only under the operator's "
+    "--include-unapproved build, absent from the shipped default."
+)
+
+
+def test_the_equality_channel_summary_carries_the_787_reason_verbatim_and_the_measured_counts(
+    smoke_report: dict[str, Any],
+) -> None:
+    """ADR-0036 Amendment 1 rider 1, #787's channel summary.
+
+    ``reason`` is pinned against ``_CHANNEL_REASON_LITERAL`` above, not
+    merely "some string is present". ``queriesDiffering``/``of`` are the
+    smoke corpus's own measured counts (3 equality queries -- excluding
+    non-equality ``mainframe-disaster-recovery`` and the two single-corpus
+    superseded/forbidden-trap queries -- none differing beyond build
+    identity at either limit), not assumed from the frozen S3 corpus's
+    unrelated 18/26 and 21/26.
+    """
+    assert smoke_report["equality"]["channel"] == {
+        "reason": _CHANNEL_REASON_LITERAL,
+        "atLimit": {"queriesDiffering": 0, "of": 3},
+        "atEqualityLimit": {"queriesDiffering": 0, "of": 3},
+    }
+
+
+def test_the_channel_exempt_field_set_matches_this_files_own_build_identity_constant() -> None:
+    """report.py's own comment on ``_BUILD_IDENTITY_EXEMPT`` promises this test
+    (adversarial finding M1, constant half).
+
+    Two independent authorities name the same two fields: ``BUILD_IDENTITY``
+    above (what the equality set-comparison
+    ``test_the_equality_query_differs_from_its_clean_counterpart_only_in_build_identity``
+    enforces a response may differ on) and ``_BUILD_IDENTITY_EXEMPT`` (what
+    ``_channel_summary`` excludes when counting a query as differing). Widening
+    either -- adding, say, ``count``, ``results`` or ``usedTokens`` to the
+    exempt set -- would silently stop counting a real content difference as a
+    channel occurrence while this file's own equality pin kept enforcing the
+    narrower set, with nothing to notice the two had drifted apart.
+    """
+    assert harness_report._BUILD_IDENTITY_EXEMPT == BUILD_IDENTITY
+
+
+def test_the_abstention_flag_probe_adds_no_extra_query_entry_to_the_report(
+    smoke_report: dict[str, Any],
+) -> None:
+    """The probe (#787) is a second wire call feeding an existing entry's
+    ``abstentionCause``, never a query of its own: it must not inflate
+    ``queries`` or the ``equality`` section's population.
+    """
+    loaded = harness_corpus.load_corpus(SMOKE_CORPUS)
+    enabled_ids = {query.id for query in loaded.queries if query.enabled}
+    equality_ids = {
+        query.id for query in loaded.queries if query.enabled and len(set(query.corpora)) == 2
+    }
+
+    assert set(smoke_report["queries"]) == enabled_ids
+    assert set(smoke_report["equality"]["queries"]) == equality_ids
+
+
+def test_the_equality_querys_two_planes_each_carry_their_own_probes_cause_and_timings_row(
+    smoke_run: tuple[dict[str, Any], dict[str, Any]],
+) -> None:
+    """The per-limit fix (e49c6520): the ``atLimit`` and ``atEqualityLimit``
+    planes of an equality abstention query each derive ``abstentionCause``
+    from their OWN-limit probe, never one plane's probe standing in for the
+    other via an unstated count-monotonicity between limit 10 and limit 50
+    (code/security/adversarial MEDIUM, "single-limit probe stands in for the
+    atEqualityLimit plane"). ``abstentionProbe`` records both flag-on limits
+    the corpus actually issued a probe at, and ``timings.json`` carries a row
+    for each -- ``{10, true}`` feeding the base plane, ``{50, true}`` feeding
+    ``atEqualityLimit``.
+    """
+    report, timings = smoke_run
+
+    full = report["queries"]["withheld-incident-key"]["corpora"]["full"]
+    assert full["abstentionCause"] == harness_report._ABSTENTION_GATE_WITHHELD
+    assert full["atEqualityLimit"]["abstentionCause"] == harness_report._ABSTENTION_GATE_WITHHELD
+
+    assert report["abstentionProbe"] == {"includeUnapproved": True, "limits": [10, 50]}
+
+    probe_rows = {
+        (row["limit"], row["includeUnapproved"])
+        for row in timings["queries"]
+        if row["queryId"] == "withheld-incident-key" and row["includeUnapproved"]
+    }
+    assert probe_rows == {(10, True), (50, True)}
+
+
+# -- G: the probe never escapes a clean-only query's declared corpora --------
+
+_CLEAN_ONLY_ABSTENTION_MIGRATION = "1N311FSDACRHQJQV010HQ93Y3Q-clean-only.yaml"
+
+
+def _write_clean_only_abstention_corpus(root: Path) -> None:
+    """A one-item corpus whose sole query declares ``corpora: [clean]`` alone.
+
+    Census measured against a real ``corpus_build.build_both`` run of this
+    exact content (one visible, approved, public item): both planes hold
+    ``items=1, chunks=1``.
+    """
+    manifest = {
+        "contractVersion": 1,
+        "corpusId": "clean-only-abstention-pin-v1",
+        "kValues": [1, 5],
+        "migrations": [{"file": _CLEAN_ONLY_ABSTENTION_MIGRATION, "plane": "visible"}],
+        "census": {
+            "full": {
+                "items": 1,
+                "byStatus": {"approved": 1},
+                "bySensitivity": {"public": 1},
+                "chunks": 1,
+            },
+            "clean": {
+                "items": 1,
+                "byStatus": {"approved": 1},
+                "bySensitivity": {"public": 1},
+                "chunks": 1,
+            },
+        },
+    }
+    queries = {
+        "queries": [
+            {
+                "id": "clean-only-abstention",
+                "class": "unknown",
+                "query": "a phrase sharing no vocabulary with the corpus at all",
+                "corpora": ["clean"],
+            }
+        ]
+    }
+    judgements = {"judgements": [{"queryId": "clean-only-abstention", "expectAbstention": True}]}
+    migration = {
+        "apiVersion": "theurian.dev/v1",
+        "id": "1N311FSDACRHQJQV010HQ93Y3Q",
+        "createdAt": "2026-09-20T09:00:00+09:00",
+        "author": "eval-harness@theurian.dev",
+        "operations": [
+            {
+                "op": "createItem",
+                "itemId": "domain.sample-item",
+                "kind": "domain",
+                "namespace": "pin-corpus",
+                "owner": "eval-harness",
+                "sensitivity": "public",
+            },
+            {
+                "op": "upsertRevision",
+                "itemId": "domain.sample-item",
+                "revisionId": "1C2T1H7RR1GG39BJXXW5WV5YFD",
+                "contentFile": "../knowledge/sample-item.md",
+                "contentSha256": "517dc231187d99708415ca6b43b2d097fb996e20f9d0a77113cedb856275aa4c",
+                "metadata": {
+                    "title": "Sample Item",
+                    "contentType": "text/markdown",
+                    "kind": "domain",
+                    "namespace": "pin-corpus",
+                    "status": "approved",
+                    "owner": "eval-harness",
+                    "trustLevel": "reviewed",
+                    "sensitivity": "public",
+                    "sourceAnchors": [
+                        {"provider": "git", "sourceUri": "git://clean-only-pin/sample-item.md"}
+                    ],
+                },
+            },
+        ],
+    }
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "manifest.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+    (root / "queries.yaml").write_text(yaml.safe_dump(queries, sort_keys=False), encoding="utf-8")
+    (root / "judgements.yaml").write_text(
+        yaml.safe_dump(judgements, sort_keys=False), encoding="utf-8"
+    )
+    migrations_dir = root / "migrations"
+    migrations_dir.mkdir()
+    (migrations_dir / _CLEAN_ONLY_ABSTENTION_MIGRATION).write_text(
+        yaml.safe_dump(migration, sort_keys=False), encoding="utf-8"
+    )
+    knowledge_dir = root / "knowledge"
+    knowledge_dir.mkdir()
+    (knowledge_dir / "sample-item.md").write_text(
+        "# Sample Item\n\nA single sample item for the clean-only abstention pin.\n",
+        encoding="utf-8",
+    )
+
+
+def test_a_clean_only_abstention_querys_probe_never_escapes_into_a_full_or_flagged_timings_row(
+    tmp_path: Path,
+) -> None:
+    """The adversarial's phantom-row reproduction (code/security/adversarial
+    MEDIUM), committed: ``probe_limits_for`` gates on ``"full"`` being in
+    ``query.corpora`` -- a clean-only abstention query must get no probe wire
+    call and no ``full`` entry at all, never a phantom ``full``/flag-on row
+    the query itself never declared.
+
+    The corpus's own single item happens to rank for this query regardless
+    of shared vocabulary (measured; the same one-item-corpus effect
+    ``test_an_abstention_query_that_returns_a_hit_of_its_own_is_not_mislabeled_gate_earned``
+    records for ``mainframe-disaster-recovery``) -- irrelevant to what this
+    pin checks, which is containment, not whether the query's own abstention
+    judgement holds.
+    """
+    corpus_root = tmp_path / "corpus"
+    _write_clean_only_abstention_corpus(corpus_root)
+
+    with tempfile.TemporaryDirectory(prefix="theurian-eval-clean-only-") as out_name:
+        code = harness_run.main(["--corpus", str(corpus_root), "--out", out_name])
+        assert code == 0
+        report: dict[str, Any] = json.loads((Path(out_name) / "report.json").read_text())
+        timings: dict[str, Any] = json.loads((Path(out_name) / "timings.json").read_text())
+
+    assert set(report["queries"]["clean-only-abstention"]["corpora"]) == {"clean"}
+    assert "abstentionProbe" not in report
+
+    assert len(timings["queries"]) == 1
+    row = timings["queries"][0]
+    assert (row["queryId"], row["corpus"], row["limit"], row["includeUnapproved"]) == (
+        "clean-only-abstention",
+        "clean",
+        5,
+        False,
+    )

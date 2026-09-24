@@ -698,6 +698,96 @@ trivially satisfied for them and tests nothing.
 > build that will state the figure with its unit; decision 6's *form* is
 > unchanged by any of this — what moved is where that form is asserted as a
 > property and where it is recorded as a channel.
+>
+> **Superseded at slice S4a: the figure is measured, the unit is settled, and
+> the channel is implemented.** The paragraph above stays as the record of what
+> was known on 2026-09-20 and is no longer the live reading. The unit is **per
+> query**. On the committed S3 corpus, **18 of 26** enabled queries differ
+> beyond the exception set at the harness `limit` of 10, and **21 of 26** at the
+> equality limit of 50 — measured at `4ce0868f` with the shipped loader and
+> recorded on
+> [#787](https://github.com/theurian/theurian/issues/787#issuecomment-5804290254),
+> which supersedes the provisional 17 of 26. The differences fall in T-17's own
+> families: `fusedScore` most often, then `retrieval.usedTokens` with `count`,
+> tail-slot displacement of visible rows, and which paragraph was excerpted.
+> **The denominator is a population, not a rate.** `of` counts every equality
+> query that ran against both corpora — all 26 of them in this corpus — and that
+> includes queries whose responses held no result rows in the run being
+> reported: at `4ce0868f`, three of the four abstention-expecting queries
+> abstained correctly on the `full` build, the one miss being
+> `q-withheld-credential-cache`, which #787 records as benign vocabulary overlap
+> by visible rows rather than a leak. Five of the 26 did not differ at the
+> equality limit and eight did not at limit 10. **Which queries made up those
+> sets is in no record this ADR can cite**, and the per-query population is what
+> slice S4b's committed baseline states. Until it does, reading 18 or 21 out of
+> 26 as a rate understates the channel — a dated observation about that one run,
+> not a property of the corpus.
+>
+> `report.json` now publishes `equality.channel` — `queriesDiffering` and `of`
+> at both limits, beside a `reason` carrying #787's annotation phrasing verbatim
+> — and `abstentionCause`, set only where the flag-on probe returns a hit the
+> default-flag query did not, so a gate-earned abstention is annotated while an
+> absence-earned one stays bare. Both landed in slice S4a
+> ([PR #795](https://github.com/theurian/theurian/pull/795)), cited by pull
+> request rather than by sha or by commit subject: no sha on that branch is
+> reachable from `origin/main`, and a squash-merge replaces the branch with one
+> new commit, so a subject citation rots exactly as a sha does — the pin
+> commit's subject disappears entirely.
+>
+> **The flag-on calls are visible in the report, not only in their effect.**
+> `report.json` carries a sibling `abstentionProbe` member —
+> `{includeUnapproved: true, limits}` — recording that probe calls ran and at
+> which limits; and `timings.json`'s per-run rows each carry `includeUnapproved`
+> beside `latencyMs`, so a duration measured on a flag-on call over the withheld
+> plane is published as one. Named here rather than left for a reader to
+> discover: a duration is its own disclosure channel, not a by-product of the
+> count.
+> `test_the_equality_querys_two_planes_each_carry_their_own_probes_cause_and_timings_row`
+> holds three things: each plane's `abstentionCause` derived from its own-limit
+> probe; the report's `abstentionProbe` reading
+> `{includeUnapproved: true, limits: [10, 50]}`; and, filtered to that query's
+> own id, exactly the two flag-on `timings.json` rows `(10, true)` and
+> `(50, true)`. **`limits` is a union across every probed query in the corpus,
+> never one query's own list** — the smoke corpus's non-equality abstention query
+> is probed at the base limit alone, and the member still reads `[10, 50]`
+> because the equality query beside it is probed at both. A single query's set is
+> derivable from its own entry instead: the base limit always, and the equality
+> limit exactly when that entry carries `atEqualityLimit`, since the probe's
+> limits and that branch are decided by the same both-corpora predicate.
+>
+> **What the tripwire caught was `abstentionCause`, not the channel.**
+> `EXPECTED_QUERY_METRIC_KEYS` moved in the same commit that added that key,
+> which is the owed-to-implemented signal firing as designed. It does not reach
+> `equality.channel`: the tripwire scans `_query_metrics`' own AST, while the
+> channel summary is assembled one level up in `build_report`, structurally
+> outside that scan. `equality.channel` is held by the integration pin named
+> below instead.
+>
+> **The mechanism is pinned; these two figures are not.**
+> `test_the_equality_channel_summary_carries_the_787_reason_verbatim_and_the_measured_counts`
+> asserts the *smoke* corpus's own summary — `queriesDiffering` 0 of 3 at both
+> limits — and pins `reason` by equality against a **literal copy of the phrase
+> written into the pin itself**, so a drift in `report._CHANNEL_REASON` diverges
+> from that copy and reddens; its own docstring states that those counts are not
+> the S3 corpus's. 18 of 26 and 21 of 26 stay a dated measurement anchored to
+> `4ce0868f`, and slice S4's committed baseline is what will hold them.
+>
+> *Corrected in PR #795's trio round, at an adversarial finding:* the sentence
+> above previously read that `reason` was pinned "by equality against the
+> module's constant, so a paraphrase reddens rather than passing" — enforcement
+> that check could not provide. Both sides of the comparison read the same
+> constant, so mutating it moved both: the `single-user` paraphrase **survived 78
+> of 78**, the measurement recorded in the pin file's own comment. A pin's
+> authority has to be independent of the value it checks, which is what the
+> literal copy — now at both the unit and the integration site — supplies.
+>
+> **The aggregate is annotated, not split.** `abstentionAccuracy` still blends
+> gate-earned and absence-earned samples, matching the `forbiddenPresentCause`
+> convention this mirrors, where an annotated zero still counts toward
+> `supersededKnowledgeErrorRate`. #787's design sketch also offered reporting
+> the two populations separately, or excluding annotated samples from the mean;
+> neither was taken, and `_abstention_cause`'s docstring carries that choice
+> where a reader meets the number.
 
 **2. The census is the test for the build-time-excluded and status-unsurfaceable
 mechanisms.** No build indexes these members, so no query can test them and a
