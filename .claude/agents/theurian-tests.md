@@ -170,3 +170,26 @@ record](https://github.com/theurian/theurian/pull/744#issuecomment-5739349093)).
 Then the encoding face the 0.4.0 anchored pass found (PR #766 HIGH-1): the
 pinning fixture decoded with `errors="replace"`, holding an encodable U+FFFD, so
 it could not produce the surrogate shape its own name claimed.
+
+## A population's count is stale the moment it moves
+
+A count or membership claim over a moving population must never be stated as a
+live number in prose or a docstring — state the population's key (what makes
+something a member), a deriving command, and one dated measurement, or, where
+the deriving command is cheap enough to run in a test, a pin that re-runs it
+and goes RED when the population moves (`test_port_count_row_claims.py` is the
+pattern). When asked to reconcile a count, RUN the deriving command: a
+hand-audit of a candidate list is the failure mode this rule exists to catch.
+When a population has more than two outcome kinds (skip, fail,
+error-at-collection, …), name the taxonomy rather than collapsing it to two,
+or the third kind goes uncounted. The worked example is `tools/mutate.py`'s
+`_lend_git_objects` docstring (PR #802): the branch stated the population as
+"five" after its own earlier commit in the same PR (the #788 fix) had added
+two members; round one's fix hand-audited it to "seven" despite an explicit
+instruction to derive it by command; round two found "seven" false the same
+way — including a collection-error outcome the skip/fail taxonomy had no word
+for — and it was terminated by running the two-tree diff (25 members). Burned
+in after that recurrence, twice in one PR. (`theurian-python.md` carries this
+as "a count states its key beside it, and you re-run that key against the
+text as committed"; `theurian-docs.md`'s is "every count is a pasted
+derivation with its scope beside it" — one family, three wordings.)
