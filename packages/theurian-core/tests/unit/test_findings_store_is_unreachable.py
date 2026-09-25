@@ -362,6 +362,8 @@ _APPLICATION_NON_SERVING_MODULES: frozenset[str] = frozenset(
         "migration_alias_guards.py",
         "migration_body_guards.py",
         "migration_engine.py",
+        # The shared OKF front-matter codec (ADR-0037): pure helpers, no store, nothing served.
+        "okf_codec.py",
         "project_service.py",
         "proposal_service.py",
         # One review-ingestion run (ADR-0030 decisions 3 and 4): it fetches
