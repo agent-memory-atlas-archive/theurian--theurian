@@ -353,6 +353,36 @@ def test_an_item_filter_value_matching_nothing_is_reported(
 
 
 # ---------------------------------------------------------------------------
+# Review-Finding: adversarial MEDIUM -- the unmatched-filter refusal
+# ordering claim had no test.
+# ---------------------------------------------------------------------------
+
+
+def test_unmatched_item_filter_values_are_reported_in_sorted_order(
+    tmp_path: Path, paths: ProjectPaths
+) -> None:
+    """`_unmatched_item_filter_refusals`'s `sorted()` call had no driving
+    test: the existing single-value case can never distinguish sorted output
+    from set-iteration order, since one element is "sorted" either way. Four
+    distinct values make an already-sorted `frozenset` iteration order
+    unlikely enough by chance to catch `sorted()`'s removal -- `frozenset`
+    iteration is hash-seeded per process (`PYTHONHASHSEED`), not per
+    assertion, so the unsorted order is fixed but unpredictable within one
+    run, which is exactly why the order is asserted rather than trusted.
+    """
+    bundle = tmp_path / "bundle"
+    _write(bundle, "vanilla.md", _VANILLA_CONCEPT)
+    unmatched = frozenset({"zzz-fourth", "aaa-first", "mmm-third", "bbb-second"})
+
+    result = _service(paths).import_bundle(
+        _request(bundle, item_filter=frozenset({"vanilla"}) | unmatched)
+    )
+
+    assert {p.item_id.value for p in result.concepts_admitted} == {"vanilla"}
+    assert [r.key for r in result.refusals] == sorted(unmatched)
+
+
+# ---------------------------------------------------------------------------
 # Review-Finding: code-review HIGH -- a divergent theurian_item_id was
 # unreachable by either --item spelling, and the refusal literal falsely
 # claimed no concept in the bundle carried the requested id.
@@ -657,21 +687,75 @@ def test_a_relation_beside_one_that_refuses_still_lands_for_the_drafted_concept(
 
 
 # ---------------------------------------------------------------------------
-# M13: `_DRAFT_REFUSAL` names three exception types; the existing battery
-# only reaches two of them (ProposalError, MigrationError).
+# Review-Finding: adversarial MEDIUM -- a non-str relation target could
+# poison the aggregated relations proposal, untested.
 # ---------------------------------------------------------------------------
 
 
-def test_a_content_type_with_no_body_extension_refuses_at_draft_not_the_whole_import(
+def test_a_non_str_relation_target_is_dropped_and_valid_edges_still_land(
     tmp_path: Path, paths: ProjectPaths
 ) -> None:
-    """`domain/proposal.py::body_extension` raises `InvariantViolationError`
-    for a content type outside Markdown/JSON/YAML -- reachable here because
-    `MediaType` accepts any `type/subtype` string while `_EXTENSIONS` maps
-    only three of them. Dropping this member from `_DRAFT_REFUSAL` would let
-    it escape `.draft()` uncaught, aborting the whole import rather than
-    refusing this one concept -- HIGH-1's crash shape, from the draft side
-    the read-failure battery cannot reach.
+    """`okf_codec.py::_decode_relation_entry`'s `not isinstance(target, str)`
+    arm had no driving test. Every admitted concept's edges land in one
+    `draft_from_document` call, so a non-str target that reached
+    `targetItemId` -- a bare YAML int is the easy mistake to author -- would
+    fail the schema's `itemId` string ref for the whole document, losing
+    every valid edge alongside it. The codec drops the malformed entry at
+    decode time instead, so it never reaches the aggregation step at all.
+    """
+    bundle = tmp_path / "bundle"
+    concept = _EXPORTED_CONCEPT.replace(
+        "theurian_content_type: text/markdown",
+        "theurian_content_type: text/markdown\n"
+        "theurian_relations:\n"
+        "  - type: related_to\n"
+        "    target: architecture.session-store\n"
+        "  - type: depends_on\n"
+        "    target: 12345\n",
+    )
+    _write(bundle, "auth-policy.md", concept)
+    _write(bundle, "vanilla.md", _VANILLA_CONCEPT)
+
+    result = _service(paths).import_bundle(_request(bundle))
+
+    assert {p.item_id.value for p in result.concepts_admitted} == {
+        "architecture.auth-policy",
+        "vanilla",
+    }
+    assert result.relations_proposal is not None
+    document = yaml.safe_load(result.relations_proposal.migration_file.read_text(encoding="utf-8"))
+    assert document["operations"] == [
+        {
+            "op": "addRelation",
+            "sourceItemId": "architecture.auth-policy",
+            "relationType": "related_to",
+            "targetItemId": "architecture.session-store",
+        }
+    ]
+
+
+# ---------------------------------------------------------------------------
+# M13, corrected: a content type `body_extension` has no mapping for used to
+# reach `.draft()` uncaught and refuse as a raw `InvariantViolationError`
+# class name (review-round HIGH-1's crash shape). It is now caught one step
+# earlier, at the reference stage, with a named boundary instead of a leaked
+# exception name (ADR-0037 decision 7's admitted set is markdown/json/yaml;
+# `_DRAFT_REFUSAL` keeps `InvariantViolationError` for `draft_from_document`'s
+# own evidence check, a separate and still-reachable cause).
+# ---------------------------------------------------------------------------
+
+
+def test_a_content_type_with_no_body_extension_refuses_as_a_reference_not_at_draft(
+    tmp_path: Path, paths: ProjectPaths
+) -> None:
+    """`domain/proposal.py::body_extension` has no mapping for a content type
+    outside Markdown/JSON/YAML -- reachable here because `MediaType` accepts
+    any `type/subtype` string while `_EXTENSIONS` maps only three of them.
+    `_resolve_body` checks the same predicate before `.draft()` is ever
+    called, so this concept is refused by its own reference rather than by a
+    `.draft()` call that would otherwise raise `InvariantViolationError`
+    uncaught, aborting the whole import rather than refusing this one
+    concept.
     """
     bundle = tmp_path / "bundle"
     _write(bundle, "sidecar.txt", "plain text body")
@@ -687,9 +771,51 @@ def test_a_content_type_with_no_body_extension_refuses_at_draft_not_the_whole_im
 
     assert {p.item_id.value for p in result.concepts_admitted} == {"vanilla"}
     [refusal] = result.refusals
-    assert refusal.kind == "draft"
-    assert refusal.key == "plain-body"
-    assert refusal.literal == "the proposal service refused it: InvariantViolationError"
+    assert refusal.kind == "reference"
+    assert refusal.key == "theurian_content_type"
+    assert refusal.literal == (
+        "content type text/plain has no proposal-body form; the import accepts "
+        "text/markdown, application/json or application/yaml exactly -- an alias "
+        "such as application/schema+json or text/x-yaml is refused even though its "
+        "body is JSON or YAML"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Review-Finding: adversarial MEDIUM -- the missing-content-type guard had
+# no test; its deletion aborts the bundle via an uncaught TypeError.
+# ---------------------------------------------------------------------------
+
+
+def test_a_sidecar_with_no_theurian_content_type_key_refuses_that_reference_alone(
+    tmp_path: Path, paths: ProjectPaths
+) -> None:
+    """`_resolve_sidecar_content_type`'s `if not concept.theurian_content_type:`
+    guard had no driving test. Without it, a bundle whose sidecar concept
+    omits the key entirely reaches `MediaType(None)`, which raises `TypeError`
+    rather than the `DomainError` the next line's `except` catches -- uncaught
+    by `.draft()`'s own `_DRAFT_REFUSAL` and the CLI's `except TheurianError`
+    alike, aborting the whole import rather than refusing this one reference.
+    This runs before the sidecar is ever read (LOW-1: the check needs nothing
+    from the file), so the refusal fires even though `sidecar.json` exists.
+    """
+    bundle = tmp_path / "bundle"
+    _write(bundle, "sidecar.json", '{"ok": true}')
+    _write(
+        bundle,
+        "no-content-type.md",
+        "---\ntype: decision\ntitle: No content type\nstatus: stable\n"
+        "theurian_body_file: sidecar.json\n---\n\nbody\n",
+    )
+    _write(bundle, "vanilla.md", _VANILLA_CONCEPT)
+
+    result = _service(paths).import_bundle(_request(bundle))
+
+    assert {p.item_id.value for p in result.concepts_admitted} == {"vanilla"}
+    [refusal] = result.refusals
+    assert refusal.kind == "reference"
+    assert refusal.key == "theurian_content_type"
+    assert refusal.literal == "key absent"
 
 
 # ---------------------------------------------------------------------------
@@ -759,34 +885,68 @@ def test_every_demonstrated_crash_face_refuses_rather_than_raising_and_leaks_no_
     locked_concept.write_text(_yaml_concept(title="Locked concept"), encoding="utf-8")
     locked_concept.chmod(0o000)
 
+    # Each of these needs a valid `theurian_content_type` (the hoisted check
+    # of LOW-1 resolves it before the sidecar is ever read), or every one
+    # would refuse identically on the absent key instead of exercising the
+    # read-failure shape it is named for.
     _write(
         bundle,
         "body-directory.md",
-        _yaml_concept(title="Body is a directory", theurian_body_file="sidecar-dir"),
+        _yaml_concept(
+            title="Body is a directory",
+            theurian_content_type="application/json",
+            theurian_body_file="sidecar-dir",
+        ),
     )
-    _write(bundle, "body-empty.md", _yaml_concept(title="Body is empty", theurian_body_file=""))
-    _write(bundle, "body-dot.md", _yaml_concept(title="Body is dot", theurian_body_file="."))
+    _write(
+        bundle,
+        "body-empty.md",
+        _yaml_concept(
+            title="Body is empty", theurian_content_type="application/json", theurian_body_file=""
+        ),
+    )
+    _write(
+        bundle,
+        "body-dot.md",
+        _yaml_concept(
+            title="Body is dot", theurian_content_type="application/json", theurian_body_file="."
+        ),
+    )
     _write(
         bundle,
         "body-nul.md",
-        _yaml_concept(title="Body has a NUL", theurian_body_file="abc\x00def"),
+        _yaml_concept(
+            title="Body has a NUL",
+            theurian_content_type="application/json",
+            theurian_body_file="abc\x00def",
+        ),
     )
     _write(
         bundle,
         "body-locked.md",
-        _yaml_concept(title="Body is unreadable", theurian_body_file="locked-sidecar.bin"),
+        _yaml_concept(
+            title="Body is unreadable",
+            theurian_content_type="application/json",
+            theurian_body_file="locked-sidecar.bin",
+        ),
     )
     _write(
         bundle,
         "body-through-file.md",
         _yaml_concept(
-            title="Body reached through a file", theurian_body_file="plainfile.txt/sub.txt"
+            title="Body reached through a file",
+            theurian_content_type="application/json",
+            theurian_body_file="plainfile.txt/sub.txt",
         ),
     )
     _write(
         bundle,
         "body-too-long.md",
-        _yaml_concept(title="Body name too long", theurian_body_file=long_name),
+        _yaml_concept(
+            title="Body name too long",
+            theurian_content_type="application/json",
+            theurian_body_file=long_name,
+        ),
     )
     oversized_label = "x" * (5 * 1024 * 1024)
     _write(

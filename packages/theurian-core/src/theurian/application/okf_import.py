@@ -38,6 +38,17 @@ refuses that reference alone -- the bundle's own front-matter key and the
 literal string it wrote, never the path it resolved to (T-25) -- and the
 import continues with everything else the bundle admits.
 
+**`theurian_body_file` is resolved against the concept document's own
+directory, never against the bundle root.** The export writes the bare
+sidecar filename -- document-relative by design, matching the Markdown link
+it sits beside (ADR-0037 decisions 2 and 7) -- so a namespaced concept's
+sidecar lives beside its document, not at the bundle root. Containment stays
+bundle-root-scoped regardless: `read_source_file` resolves and contains the
+*joined* path against `root`, so a reference may legitimately step outside
+its own document's directory as long as it stays inside the bundle -- decision
+6's own words bound containment to "under the bundle root", not to the
+document's directory.
+
 **A `sources[]` entry is never followed, fetched, or reachability-checked.**
 Whether it becomes an additional :class:`SourceAnchor` is a syntactic test
 alone (decision 6): a URI or a relative path, never a scope descriptor
@@ -47,6 +58,7 @@ alone (decision 6): a URI or a relative path, never a scope descriptor
 from __future__ import annotations
 
 import os
+import posixpath
 import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -85,7 +97,7 @@ from theurian.domain.errors import (
 )
 from theurian.domain.identifiers import ItemId
 from theurian.domain.knowledge import SourceAnchor
-from theurian.domain.proposal import Evidence
+from theurian.domain.proposal import Evidence, body_extension
 from theurian.domain.values import MARKDOWN, MediaType
 from theurian.security.paths import read_source_file
 
@@ -320,31 +332,25 @@ def _read_failure_reason(exc: Exception) -> str:
     )
 
 
-def _resolve_body(
-    root: Path, concept: DecodedConcept, inline_body: str
-) -> tuple[str, MediaType] | ImportRefusal:
-    """The concept's body, and its media type.
+def _resolve_sidecar_content_type(concept: DecodedConcept) -> MediaType | ImportRefusal:
+    """The sidecar's declared media type, or why it cannot become a proposal body.
 
-    A markdown body embeds in the concept document (the common case); a
-    non-markdown body lives in the sidecar `theurian_body_file` names,
-    preserved byte for byte on export, so it is read the same way here.
+    `body_extension` admits exactly three literal values -- `text/markdown`,
+    `application/json`, `application/yaml` -- not the three *format classes*
+    export accepts: `sidecar_extension` maps any `+json`/`+yaml`-suffixed type
+    or `text/x-yaml` to the same sidecar extension on export, so
+    `application/schema+json` exports as a `.json` sidecar and still refuses
+    here, even though its body genuinely is JSON. Checked before `.draft()` so
+    a content type outside the literal set is refused by its own reference,
+    named, rather than reaching `.draft()` and refusing as a raw
+    `InvariantViolationError` class name (ADR-0037 decision 7's admitted set
+    is a recorded boundary, not an oversight -- export is total over content
+    types, and this is the point where import narrows back to what a
+    proposal body can hold). Alias normalization is a deliberate non-goal of
+    this check: it would widen the admitted set and belongs to its own issue.
     """
-    if concept.theurian_body_file is None:
-        return inline_body, MARKDOWN
-    try:
-        sidecar_bytes = read_source_file(root, concept.theurian_body_file)
-    except (TheurianError, OSError, ValueError):
-        return ImportRefusal(
-            kind=KIND_REFERENCE, key=THEURIAN_BODY_FILE, literal=concept.theurian_body_file
-        )
-    try:
-        sidecar_text = sidecar_bytes.decode("utf-8")
-    except UnicodeDecodeError:
-        return ImportRefusal(
-            kind=KIND_REFERENCE, key=THEURIAN_BODY_FILE, literal=concept.theurian_body_file
-        )
     if not concept.theurian_content_type:
-        return ImportRefusal(kind=KIND_REFERENCE, key="theurian_content_type", literal="")
+        return ImportRefusal(kind=KIND_REFERENCE, key="theurian_content_type", literal="key absent")
     try:
         content_type = MediaType(concept.theurian_content_type)
     except DomainError:
@@ -353,7 +359,79 @@ def _resolve_body(
             key="theurian_content_type",
             literal=concept.theurian_content_type,
         )
-    return sidecar_text, content_type
+    try:
+        body_extension(content_type)
+    except InvariantViolationError:
+        return ImportRefusal(
+            kind=KIND_REFERENCE,
+            key="theurian_content_type",
+            literal=(
+                f"content type {content_type.value} has no proposal-body form; the import "
+                "accepts text/markdown, application/json or application/yaml exactly -- an "
+                "alias such as application/schema+json or text/x-yaml is refused even though "
+                "its body is JSON or YAML"
+            ),
+        )
+    return content_type
+
+
+def _resolve_body(
+    root: Path, relative: PurePosixPath, concept: DecodedConcept, inline_body: str
+) -> tuple[str, MediaType, PurePosixPath | None] | ImportRefusal:
+    """The concept's body, its media type, and the sidecar's own bundle-relative
+    path -- `None` for an embedded markdown body, which has no sidecar.
+
+    A markdown body embeds in the concept document (the common case); a
+    non-markdown body lives in the sidecar `theurian_body_file` names,
+    preserved byte for byte on export, so it is read the same way here --
+    joined onto `relative`'s own directory before the read, never onto the
+    bundle root (see the module docstring).
+
+    The content type is resolved *before* the sidecar is read: the check
+    needs nothing from the file, so a reference a bad content type already
+    dooms never pays for an up-to-8MiB read, and whichever check would have
+    run first no longer decides which refusal a doubly-bad reference reports.
+    """
+    if concept.theurian_body_file is None:
+        return inline_body, MARKDOWN, None
+    content_type_outcome = _resolve_sidecar_content_type(concept)
+    if isinstance(content_type_outcome, ImportRefusal):
+        return content_type_outcome
+    sidecar_relative = (relative.parent / concept.theurian_body_file).as_posix()
+    try:
+        sidecar_bytes = read_source_file(root, sidecar_relative)
+    except (TheurianError, OSError, ValueError):
+        return ImportRefusal(
+            kind=KIND_REFERENCE, key=THEURIAN_BODY_FILE, literal=concept.theurian_body_file
+        )
+    # The sidecar's own bundle-relative path, lexically collapsed -- not
+    # `sidecar_relative` itself, which can still carry the `../` a
+    # cross-namespace reference wrote (MEDIUM-1): a second `okf-bundle:`
+    # anchor naming the concept document alone would misattribute a body
+    # that actually came from elsewhere in the bundle. Collapsed with
+    # `posixpath.normpath`, never re-resolved against the filesystem:
+    # `read_source_file` already proved containment for this exact
+    # reference, so a second resolution bought nothing but a TOCTOU window
+    # and this function's own fragile invariant (HIGH-2) -- an earlier
+    # version compared `resolve_within_root(root, ...)`'s resolved
+    # destination against `root` exactly as this function received it,
+    # which `import_bundle` always resolves first but which nothing at
+    # this function's own signature enforced; called with an unresolved,
+    # symlinked `root` directly, that comparison raised `ValueError`,
+    # refusing every non-markdown concept. The lexical form needs no
+    # resolved `root` at all, so no caller, present or future, has to
+    # uphold that invariant. The concept's own identity anchor
+    # (`_bundle_identity_anchor` above) already names its path the same
+    # lexical way, for the same T-25 reason: never the path something
+    # resolved to, always the reference as written.
+    sidecar_bundle_relative = PurePosixPath(posixpath.normpath(sidecar_relative))
+    try:
+        sidecar_text = sidecar_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        return ImportRefusal(
+            kind=KIND_REFERENCE, key=THEURIAN_BODY_FILE, literal=concept.theurian_body_file
+        )
+    return sidecar_text, content_type_outcome, sidecar_bundle_relative
 
 
 def _is_uri_or_relative_path(resource: str) -> bool:
@@ -364,9 +442,19 @@ def _is_uri_or_relative_path(resource: str) -> bool:
     scope descriptor can itself open with a colon-terminated word that
     satisfies RFC 3986's scheme grammar ("BigQuery: all queries in project
     X" -- "BigQuery" is all letters, a legal scheme), so testing the scheme
-    first admitted any such descriptor as if it were a URI. No legitimate URI
-    or relative path carries whitespace, so checking for it first is never a
-    false exclusion.
+    first admitted any such descriptor as if it were a URI.
+
+    **Recorded decision, not a universal: whitespace marks a descriptor, and a
+    whitespace-bearing path is conservatively excluded along with it.** A
+    path such as `docs/my design.md` is a legitimate relative path that
+    happens to carry a space, and this predicate excludes it too -- the
+    descriptor/path ambiguity is unresolvable syntactically, so there is no
+    rule that admits the path without also admitting a colon-free descriptor
+    ("all queries in BigQuery project X" carries no colon at all). The cost
+    is a lost *optional* anchor (`sources[]` is provenance, not the concept's
+    identity); the benefit is that no descriptor is ever misrecorded as
+    provenance. INV-8's bundle-identity anchor still holds the floor
+    regardless of how this predicate classifies any `sources[]` entry.
 
     **The scheme grammar admits `javascript:`, `data:` and `file:`, and this
     function does not narrow it.** That is deliberate, not an oversight: this
@@ -400,8 +488,17 @@ def _bundle_identity_anchor(relative: PurePosixPath) -> SourceAnchor:
     )
 
 
-def _source_anchors(relative: PurePosixPath, concept: DecodedConcept) -> tuple[SourceAnchor, ...]:
+def _source_anchors(
+    relative: PurePosixPath, concept: DecodedConcept, sidecar_relative: PurePosixPath | None
+) -> tuple[SourceAnchor, ...]:
+    """The concept document's own identity anchor, plus a second one for its
+    sidecar when the body lives in one (MEDIUM-1): a cross-namespace
+    reference (H-1's fix admits one) makes the two paths genuinely different,
+    and the document-only anchor left the body's true origin unrecorded.
+    """
     anchors = [_bundle_identity_anchor(relative)]
+    if sidecar_relative is not None:
+        anchors.append(_bundle_identity_anchor(sidecar_relative))
     anchors.extend(
         SourceAnchor(provider="okf-source", source_uri=entry.resource)
         for entry in concept.sources
@@ -452,10 +549,10 @@ def _map_concept(root: Path, relative: PurePosixPath) -> ImportedConcept | Impor
             literal=f"unrecognized type: {concept.kind!r}",
         )
 
-    body_outcome = _resolve_body(root, concept, decoded.body)
+    body_outcome = _resolve_body(root, relative, concept, decoded.body)
     if isinstance(body_outcome, ImportRefusal):
         return body_outcome
-    body, content_type = body_outcome
+    body, content_type, sidecar_relative = body_outcome
 
     return ImportedConcept(
         item_id=item_id,
@@ -464,7 +561,7 @@ def _map_concept(root: Path, relative: PurePosixPath) -> ImportedConcept | Impor
         body=body,
         content_type=content_type,
         labels=concept.labels,
-        source_anchors=_source_anchors(relative, concept),
+        source_anchors=_source_anchors(relative, concept, sidecar_relative),
         relations=concept.theurian_relations,
     )
 
