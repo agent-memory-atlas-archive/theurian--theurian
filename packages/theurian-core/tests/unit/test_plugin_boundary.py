@@ -17,6 +17,7 @@ from typing import Final
 
 import pytest
 import yaml
+from command_population import _population
 from jsonschema import Draft202012Validator
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
@@ -534,6 +535,99 @@ def test_installed_core_is_inside_the_declared_range() -> None:
         declaration, Version.parse_python(__version__), __protocol_version__
     )
     assert verdict.is_compatible, verdict.message
+
+
+#: Reach: a line whose first three cells read these once leading ``>`` markers, edge pipes,
+#: emphasis, backticks and case are dropped; more columns may follow.
+MATRIX_COLUMNS: Final = ("plugin", "core", "protocol")
+
+#: Where it is published. A copy appearing or vanishing is a decision made here.
+MATRIX_FILES: Final = frozenset({"CHANGELOG.md", "docs/contributing/release.md"})
+
+#: Reach: the ``<MAJOR>.<MINOR>.x``, any case and ``v`` allowed, leading a series cell once
+#: emphasis, backticks and a link bracket are stripped, whatever follows it (``0.1.x (bundled)``).
+_SERIES: Final = re.compile(r"v?(\d+\.\d+\.x)\b", re.IGNORECASE)
+
+
+def _cells(line: str) -> list[str]:
+    """*line*'s table cells, stripped, with its blockquote markers and edge pipes dropped."""
+    return [cell.strip() for cell in line.lstrip(" \t>").strip().strip("|").split("|")]
+
+
+def _matrix_tables(text: str) -> list[list[list[str]]]:
+    """Every table in *text* headed by :data:`MATRIX_COLUMNS`: its body rows, as cells."""
+    lines = text.splitlines()
+    tables = []
+    for index, line in enumerate(lines):
+        if tuple(cell.strip("*_`").casefold() for cell in _cells(line)[:3]) != MATRIX_COLUMNS:
+            continue
+        rows = []
+        for row in lines[index + 1 :]:
+            if "|" not in row:
+                break
+            cells = _cells(row)
+            if not all(re.fullmatch(r":?-+:?", cell) for cell in cells):
+                rows.append(cells)
+        tables.append(rows)
+    return tables
+
+
+def _series(cell: str) -> str | None:
+    """The series token leading *cell*, lower-cased, or ``None``."""
+    match = _SERIES.match(cell.lstrip("*_[`"))
+    return match.group(1).lower() if match else None
+
+
+def _unquoted(cell: str) -> str:
+    """*cell* without wrapping backticks: one table writes them."""
+    return cell[1:-1] if len(cell) > 1 and cell[0] == cell[-1] == "`" else cell
+
+
+def test_every_published_compatibility_matrix_row_matches_compatibility_yaml() -> None:
+    """At ``855ebd87`` both matrices read ``< 0.2.0``; ``compatibility.yaml`` declared ``0.6.0``.
+
+    Only the declared series' row is held; the rest would be history, and there
+    was none because the plugin train had cut no ``plugin-v*`` tag as of 2026-09-29 (#46).
+    Not run by a documentation-only pull request (#839); ``release-core.yml``'s
+    quality job runs the whole suite at every tag, so a drift cannot reach a
+    release. ``plugin.yml`` runs this file on ``plugins/**``, so a pull request
+    that moves the declaration is held; ``core.yml`` also triggers on
+    ``docs/contributing/release.md``.
+    """
+    declaration = yaml.safe_load((PLUGIN / "compatibility.yaml").read_text(encoding="utf-8"))
+    major, minor = str(declaration["pluginVersion"]).split(".")[:2]
+    series = f"{major}.{minor}.x"
+    ceiling = declaration["coreCompatibility"]
+    expected = [
+        series,
+        f"≥ {ceiling['minimum']}, < {ceiling['maximumExclusive']}",
+        str(declaration["protocolVersion"]),
+    ]
+    published = {
+        path.relative_to(REPO_ROOT).as_posix(): tables
+        for path in _population(REPO_ROOT)
+        if path.suffix == ".md" and (tables := _matrix_tables(path.read_text(encoding="utf-8")))
+    }
+
+    assert published, (
+        f"no tracked markdown file carries a {MATRIX_COLUMNS} table, so nothing is held"
+    )
+    assert set(published) == MATRIX_FILES, (
+        f"the matrix is published in {sorted(published)}, expected {sorted(MATRIX_FILES)}. "
+        f"Amend MATRIX_FILES only as a decision, and name the new copy in release.md."
+    )
+
+    stale = []
+    for path, tables in published.items():
+        for table in tables:
+            held = [row for row in table if _series(row[0]) == series]
+            if [[series, *(_unquoted(cell) for cell in row[1:3])] for row in held] != [expected]:
+                stale.append((path, held))
+
+    assert not stale, (
+        f"the {series} row of the published matrix does not read {expected}, which "
+        f"compatibility.yaml declares: {stale}. Re-derive the row from the declaration."
+    )
 
 
 def test_plugin_and_core_versions_are_independent() -> None:

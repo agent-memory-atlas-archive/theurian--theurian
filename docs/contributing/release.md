@@ -102,12 +102,32 @@ cancelled mid-build" tells them whether they were affected.
 
 ### 3. Protocol check
 
+Pre-1.0, every Core MINOR cut raises the bundled plugin's
+`coreCompatibility.maximumExclusive` to the next MINOR, in the cut's own pull
+request, whether or not the protocol changed — this follows from the ceiling
+rule under *Versioning* above. The 0.5.0 cut raised it to `0.6.0` with
+`protocolVersion` unchanged (`9aafb17a`). The raise reaches installed plugins
+only through a plugin release — `version` in `plugin.json` and `pluginVersion`
+in `compatibility.yaml` bumped, then the marketplace entry updated — because
+Claude Code caches a plugin by its declared version (*Releasing the plugin*,
+§2). No step of a Core cut performs that release, and on 2026-09-29
+`git ls-remote --tags origin 'plugin-v*'` printed nothing
+([#46](https://github.com/theurian/theurian/issues/46)).
+
 If the protocol changed, say so prominently and list every client that must
 update. Then, in this order:
 
 1. release Core;
 2. update each client's `coreCompatibility` and `protocolVersion`;
 3. release the clients.
+
+That order is for external clients. The bundled plugin's `protocolVersion`, like
+its ceiling, changes in the cut's own pull request:
+`test_plugin_boundary.py::test_installed_core_is_inside_the_declared_range`
+resolves `compatibility.yaml` against Core's `__protocol_version__`, and
+`release-core.yml`'s `quality` job runs it at the tag. Measured 2026-09-29 at
+`855ebd87` in a throwaway clone: with `__protocol_version__` set to
+`theurian/v2`, that test fails with `PROTOCOL_MISMATCH`.
 
 Clients that stop working loudly are recoverable. Clients that keep working
 against a changed contract are not.
@@ -559,11 +579,26 @@ gate, and the `RELEASE_SIGNERS` trust root above does not reach this train.
 
 ## Compatibility matrix
 
-Maintain this in the repository README as releases accumulate:
+The matrix is published here and at the end of the root
+[`CHANGELOG.md`](../../CHANGELOG.md), not in the README: at `855ebd87`,
+`git grep -n '^| Plugin | Core'` returns those two tables and nothing else. In
+each, the row for the plugin series `plugins/claude-code/compatibility.yaml`
+declares — the `<MAJOR>.<MINOR>.x` of its `pluginVersion` — is derived from that
+file, and
+`packages/theurian-core/tests/unit/test_plugin_boundary.py::test_every_published_compatibility_matrix_row_matches_compatibility_yaml`
+holds that row, one per table, to it, so a pull request that moves the
+declaration moves both rows or goes RED. Rows for earlier series are history,
+added as releases accumulate, and nothing holds them. The per-release
+*Compatibility* blocks in `plugins/claude-code/CHANGELOG.md` are release-time
+snapshots that nothing compares with `compatibility.yaml`, and they are not
+history while their version is still the current one: the
+`[0.1.1] - 2026-08-09` block reads `>= 0.1.0-dev.0, < 0.2.0` while the in-tree
+`0.1.1` declares `< 0.6.0`, because the ceiling moved without a version bump
+([#46](https://github.com/theurian/theurian/issues/46)).
 
 | Plugin | Core | Protocol |
 | :-- | :-- | :-- |
-| 0.1.x | ≥ 0.1.0-dev.0, < 0.2.0 | theurian/v1 |
+| 0.1.x | ≥ 0.1.0-dev.0, < 0.6.0 | theurian/v1 |
 
 ## Release checklist
 
@@ -591,6 +626,15 @@ the moment someone is deciding whether to tag.
 - [ ] *(CI)* CHANGELOG has a non-empty section for the version
 - [ ] CHANGELOG written for an upgrade decision, not just present
 - [ ] Protocol change, if any, called out
+- [ ] *(CI)* The bundled plugin's `coreCompatibility.maximumExclusive` admits
+      the version being cut (§3) —
+      `packages/theurian-core/tests/unit/test_plugin_boundary.py::test_installed_core_is_inside_the_declared_range`,
+      which `release-core.yml`'s `quality` job runs under `uv run pytest -q`.
+      Measured 2026-09-29 at `855ebd87` in a throwaway clone: with `__version__`
+      set to `0.6.0` that test fails with `CORE_TOO_NEW`; at `0.5.0` it passes
+- [ ] *(CI)* Each matrix's row for the declared plugin series agrees with
+      `compatibility.yaml` —
+      `packages/theurian-core/tests/unit/test_plugin_boundary.py::test_every_published_compatibility_matrix_row_matches_compatibility_yaml`
 - [ ] *(CI)* Tag is `core-v*` and its signature **verifies** against a key
       registered to an account in `RELEASE_SIGNERS`
 - [ ] The key you are signing with is registered on that account (§4) — this is
