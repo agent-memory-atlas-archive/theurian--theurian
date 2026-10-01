@@ -4,12 +4,13 @@ Deliberately exposes no method that updates a revision. Immutability (ADR-0006)
 is expressed in the type signature, not only in prose -- an adapter cannot offer
 an update path without violating the Protocol.
 
-Three Protocols live here, not three ports. Only :class:`CanonicalStore` is in
-``ALL_PORTS``, the register ADR-0003 point 5 is closed over;
-:class:`CanonicalReadSession` is mostly a narrowing of it and
-:class:`IndexBuildSession` is a widening of *that* by one method, so both sit
-outside the register on purpose, for the reasons their own docstrings give, and
-the port set ADR-0003 fixes is unchanged.
+Three Protocols live here, and only :class:`CanonicalStore` is in
+``ALL_PORTS``, the register ADR-0003 point 5 is closed over.
+:class:`CanonicalReadSession` narrows three of its reads and widens it by three
+more, and :class:`IndexBuildSession` widens *that* by one method. Whether the
+two sessions belong outside the register is open, for the reasons
+:class:`CanonicalReadSession`'s docstring gives (#865); the port set ADR-0003
+fixes is unchanged.
 """
 
 from __future__ import annotations
@@ -419,15 +420,32 @@ class CanonicalStore(Protocol):
 class CanonicalReadSession(Protocol):
     """One pass over canonical state, opened and closed by the caller.
 
-    **Not a port, and deliberately outside the register.** ADR-0003's closed set
-    is :data:`theurian.domain.ports.ALL_PORTS` -- see point 5's Milestone 7
-    amendment -- and this is not in it. Of its eight members, ``list_items``,
-    ``get_item`` and ``get_revision`` are :class:`CanonicalStore`'s own narrowed
-    in; ``get_item_exact`` is the alias-free read T-21 needs, and
+    **Not in the register, and whether it belongs there is open.** ADR-0003's
+    closed set is :data:`theurian.domain.ports.ALL_PORTS` -- see point 5's
+    Milestone 7 amendment -- and this is not in it. Of its eight members,
+    ``list_items``, ``get_item`` and ``get_revision`` are
+    :class:`CanonicalStore`'s own narrowed in; ``get_item_exact`` is the
+    alias-free read T-21 needs, and
     ``get_item_metadata``/``get_item_exact_metadata`` are the body-free reads the
     timing gate needs (0.2.3) -- none of which that port offers; ``__enter__`` and
     ``__exit__`` add the handle lifetime it deliberately does not express. No
     :class:`CanonicalStore` method returns one.
+
+    Over the two gates that use it, the SEC-13 gate path reads through this
+    Protocol with ``get_item_metadata``, ``get_item_exact``,
+    ``get_item_exact_metadata`` and ``get_revision``, and the narrowed
+    ``get_item`` has no caller in ``src/``. ``ResultGate``'s ``store_factory``,
+    wired to ``SqliteCanonicalStore`` in ``mcp.search.hybrid_answer``, is the
+    gate path's one injected session seam; search reads ``get_item_metadata``,
+    ``get_item_exact`` and ``get_revision`` through it. ``_relation_is_visible``
+    is typed with this Protocol and reads ``get_item_exact_metadata``, but in
+    shipped wiring always receives the concrete ``SqliteCanonicalStore`` that
+    ``knowledge_get`` opens. The T-21 and T-26 read contracts the gates rely on
+    are declared here and not on :class:`CanonicalStore`, and an adapter
+    implementing exactly :class:`CanonicalStore`'s methods is not an instance of
+    this ``@runtime_checkable`` Protocol. Whether that makes this a substitution
+    point is `#865 <https://github.com/theurian/theurian/issues/865>`_'s
+    question, which ADR-0003 point 5 records as open.
 
     Injection is per consumer rather than one shared factory, and the two
     annotations differ: ``ResultGate`` (``application/retrieval_service.py``)
@@ -437,9 +455,7 @@ class CanonicalReadSession(Protocol):
     :class:`IndexBuildSession` records. ``ResultGate`` is the same SEC-13 gate
     :meth:`__enter__` below already names as the caller that matters, which is
     the check this sentence should have run: the module contradicted itself for
-    two revisions while naming ``RetrievalService`` here. What an operator
-    substitutes is still a :class:`CanonicalStore` adapter either way, so this
-    opens no boundary the register does not already govern.
+    two revisions while naming ``RetrievalService`` here.
 
     Stated without an ordinal on purpose. This paragraph read "not a fifteenth
     port" while ``ALL_PORTS`` held seventeen: an ordinal pinned to a count drifts
@@ -488,8 +504,12 @@ class CanonicalReadSession(Protocol):
         non-surfaceable item's id would otherwise let that item clear a gate as
         the approved item the alias points at:
         :func:`~theurian.mcp.tools._relation_is_visible` gates each relation
-        endpoint through this exact read, so an endpoint that is also an alias
-        key is judged by its own status and not the alias target's (SEC-13, T-21).
+        endpoint through this read's body-free form, :meth:`get_item_exact_metadata`,
+        so an endpoint that is also an alias key is judged by its own status and
+        not the alias target's (SEC-13, T-21). This joined form serves a row the
+        gate has already cleared:
+        :meth:`~theurian.application.visibility.CanonicalVisibility._served_item`,
+        the GHSA-3f65 content check, reads the current body through it.
         """
         ...
 
@@ -500,12 +520,17 @@ class CanonicalReadSession(Protocol):
         columns, and reading the current revision's body before that decision made
         a withheld item's refusal scale with the body's size -- an
         existence-and-size side channel a caller could time. This read answers the
-        gate from the pointer row; the body is read through :meth:`get_item` only
-        once the item is confirmed surfaceable and is going to be served. Resolves
-        aliases like :meth:`get_item`. The returned item carries
-        ``current_served_content_sha256=None``: no body was read to compute it, so
-        the serve gate treats it as unverifiable and withholds -- which is why the
-        GHSA-3f65 content-identity check reads the full item, never this one.
+        gate from the pointer row; a body is read only after the item clears it --
+        by ``knowledge.get`` through ``SqliteCanonicalStore.current_revision``; on
+        search through :meth:`get_item_exact` by the GHSA-3f65 content check
+        (``CanonicalVisibility._served_item``), memoised per distinct item with a
+        row that clears status, sensitivity and revision, served or not, and
+        through :meth:`get_revision` by ``ResultGate._surfaced`` for each of the
+        first ``limit`` candidates. Resolves aliases like :meth:`get_item`. The
+        returned item carries ``current_served_content_sha256=None``: no body was
+        read to compute it, so the serve gate treats it as unverifiable and
+        withholds -- which is why the GHSA-3f65 content-identity check reads the
+        full item, never this one.
         """
         ...
 

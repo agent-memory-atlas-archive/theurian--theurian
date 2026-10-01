@@ -93,10 +93,14 @@ class CanonicalVisibility:
 
     Memoised by item for the life of one request. The retrievers overlap, one
     document contributes several chunks, and re-reading cannot change the answer
-    inside a single session — so this costs one ``get_item`` per distinct
-    document per request however deep the retrievers are asked to go. Measured at
-    1.4 ms per hundred items, against 3.3 ms per hundred for the revision reads
-    that used to happen on this path for every candidate.
+    inside a single session — so this costs one bodyless ``get_item_metadata``
+    per distinct document per request however deep the retrievers are asked to
+    go. Recorded in ``21e1ba9``: 1.4 ms per hundred items, against 3.3 ms per
+    hundred for the revision reads that used to happen on this path for every
+    candidate. The 1.4 ms priced that commit's ``get_item``: the alias lookup
+    and the pointer row, with no join — the shape ``get_item_metadata`` reads
+    now. 0.1.0.dev13 (``39c529ad``) joined the current body into ``get_item``,
+    and 0.2.3 split the pointer read back out.
 
     That is the *canonical read* count, and :meth:`cleared` separates it from the
     number of times this class is asked — which is one per ranked row, and larger
@@ -152,7 +156,9 @@ class CanonicalVisibility:
         #: The full read -- body joined, `current_served_content_sha256`
         #: recomputed -- paid only by a candidate that has already cleared status,
         #: sensitivity and revision, for the GHSA-3f65 content-identity check.
-        #: Memoised per item so a document's many chunks share one body read.
+        #: Memoised per item so a document's many chunks share one `get_item_exact`;
+        #: `ResultGate._surfaced` reads a served candidate's body again, through
+        #: `get_revision`.
         self._served: dict[str, KnowledgeItem | None] = {}
 
     def cleared(self, ranked: Sequence[Ranked]) -> tuple[Ranked, ...]:
@@ -175,8 +181,11 @@ class CanonicalVisibility:
         pre-gate body-materialization channel, fixed in 0.2.3). The per-candidate
         read is now ``get_item_metadata``, the pointer row alone: status,
         sensitivity and revision decide the gate from it, and the body is read —
-        through ``get_item``, once, memoised on ``self._served`` — only for a row
-        that has already cleared those axes and is going to be served. So the
+        through ``get_item_exact`` in :meth:`_served_item`, memoised per distinct
+        item on ``self._served`` — only for a row that has already cleared those
+        axes. That is every such row in ``ranked``, including rows the response
+        never serves; ``ResultGate._surfaced`` then reads the body of each of the
+        first ``limit`` candidates again, through ``get_revision``. So the
         *count* of per-candidate reads still moves with the withheld count (the
         T-17 residual below, unchanged), while its per-read *size* no longer does.
 
@@ -190,8 +199,9 @@ class CanonicalVisibility:
           item count* of ``ranked``, because :meth:`item` memoises on
           ``self._items`` for the life of the request. This is the number a
           canonical store can observe, so this is the number T-17 is about. (The
-          body-carrying ``get_item`` calls are the distinct *surfaceable* item
-          count, a subset, and carry no withheld row.)
+          body-carrying ``get_item_exact`` calls are the distinct item count of
+          the rows that clear status, sensitivity and revision, a subset, and
+          reach no row withheld on those axes.)
 
         The two differ by chunking rather than marginally:
         :data:`~theurian.domain.chunking.TARGET_CHARS` is 1,000, so one document
@@ -226,10 +236,13 @@ class CanonicalVisibility:
         is the whole claim rather than a caveat on it: the line exists because
         the withdrawn rows are in the file the retriever ranked, and the
         withdrawal→purge trigger removes *this* term rather than reducing it. These
-        figures and the ``ec0dbcd`` ones below were taken before 0.2.3, when the
-        per-candidate read was body-carrying ``get_item``; 0.2.3 leaves the *shape*
-        (linear in the withheld document count) and shrinks each read to a bodyless
-        ``get_item_metadata``, so the magnitude here is an upper bound on the
+        figures were recorded in ``21e1ba9``, when the per-candidate ``get_item``
+        read the pointer row with no join — the shape ``get_item_metadata`` reads
+        now (corrected in #832: this paragraph used to date them to the joined
+        read). The ``ec0dbcd`` figures below were taken after 0.1.0.dev13 joined the
+        body into that read and before 0.2.3 split it back out: 0.2.3 leaves their
+        *shape* (linear in the withheld document count) and shrinks each read to a
+        bodyless ``get_item_metadata``, so their magnitude is an upper bound on the
         current per-read cost, not the current cost.
 
         **On a purged build there is no line left to be linear.** Re-measured
@@ -488,7 +501,7 @@ class CanonicalVisibility:
         # that revision now. Equal in the honest case by INV-1; unequal means the
         # served text drifted, so the row is withheld.
         #
-        # `None` -- a current revision whose row the gate read could not
+        # `None` -- a current revision whose row `get_item_exact`'s join could not
         # dereference -- is withheld too: a check that cannot be performed is not a
         # check that passes, and failing towards fewer results is the only
         # direction a derived file may fail in.

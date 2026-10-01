@@ -1,0 +1,726 @@
+"""The records that name the reads each gate makes, held to the call sites (#832).
+
+**The class.** Prose names a read by symbol, and nothing derived that prose from
+the call site. `_relation_is_visible` moved from `get_item_exact` to
+`get_item_exact_metadata` in 0.2.3 (T-26), and the records kept saying the old
+one. The post-gate body reads were then written as one reader where three gates
+have four, so a record that read right for one gate was false for another. Every
+set a record is held to is derived from `src` by `gate_read_facts` and no table
+row spells the read it expects, except the two records named below.
+
+**Two kinds of record, two rules.**
+
+- *R records* describe the read `_relation_is_visible` decides on. The named
+  read must be the derived one (`_first`, `_last`). Two of them, the normative
+  Security row and the dated T-21 Amended block, are held to the fixed name
+  `FIXED_R` instead, because a record of what a future traversal must do, or of
+  what 0.2.3 did, is not falsified by a later change to the gate. A separate test
+  ties `FIXED_R` to the live call, so a regression in the code blames the code.
+- *Post-gate records* describe what a gate reads after it clears a row. Each is
+  held, per `PostGate`, to the checks `gate_read_rules` states: the body readers
+  named in its scope equal the derived readers of the gate it describes, it names
+  the gate's call sites, a clause naming a call site names only that site's
+  reads, and its scope spells none of the phrases the pre-fix records used. The
+  scope is the whole record or, where a docstring also describes `get_item` and the
+  like, the sentences from an anchor.
+
+**The keys, and their known-weak halves.** Sentences end where `record_sentences`
+says, and a clause where it says. The name set is `gate_read_facts.READ_NAMES`: the
+session members and `current_revision`. A record is located by a claim-free
+anchor, and a missing one says "record not found", never "claim false". What the
+rules cannot see:
+
+- `_first` and `_last` are mirror rules. `_first` accepts a sentence that names the
+  derived read first however it frames it (adversarial U10: "never the body-free
+  `get_item_exact_metadata`, always the joined `get_item_exact`" passes), and
+  `_last` one that names it last (U8: "through `get_item_exact` and never through its
+  body-free form `get_item_exact_metadata`" passes). Each also accepts a stale name
+  on the other side of the sentence.
+- The post-gate clause rule is exclusion within a clause, so two call sites in one
+  clause may swap their reads; the clause cuts are in `gate_read_rules`.
+- A record's scope spells none of the phrases in `_FORBIDDEN`; a false
+  claim in other words passes.
+- A stale claim that names no read is held only where a rule reads its word: the
+  Tests row's "body-free", through a negation window of twenty characters.
+- A recorded file gaining a line in a record no table names (adversarial N1: a new
+  stale line in the roadmap), any record not in the tables below, and the prose of
+  `test_result_gate_session.py`, whose module docstring names reads and which no
+  pin holds.
+
+`test_adr_0038_joined_read_population.py` is the ratchet over the rest of the
+tree, and it is line-keyed. The Control, part A paragraph of T-21 is the
+0.1.0.dev6 record and is expected to name `get_item_exact`; only its `Amended in
+#832` block is held.
+"""
+
+from __future__ import annotations
+
+import ast
+import re
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Final
+
+import pytest
+from adr_0038_support import (
+    KNOWLEDGE,
+    PORT,
+    ROADMAP,
+    SRC,
+    STORE,
+    THREAT_MODEL,
+)
+from gate_read_facts import (
+    READ_NAMES,
+    REPO_ROOT,
+    TOOLS_FILE,
+    Gate,
+    body_readers,
+    callees,
+    combined,
+    function,
+    gates,
+    joined_readers,
+    klass,
+    methods,
+    tree,
+)
+from gate_read_rules import (
+    Facts,
+    PostGate,
+    _block,
+    _bullet,
+    _comment,
+    _comment_above,
+    _doc,
+    _lead,
+    _module_doc,
+    _names,
+    _problems,
+    _row,
+)
+from record_sentences import from_anchor, sentence_containing, sentences
+
+pytestmark = pytest.mark.unit
+
+VISIBILITY: Final = SRC + "application/visibility.py"
+INDEX_BUILDER: Final = SRC + "application/index_builder.py"
+ALIAS_GUARDS: Final = SRC + "application/migration_alias_guards.py"
+
+#: The relation gate's read as the normative and dated records name it.
+FIXED_R: Final = "get_item_exact_metadata"
+
+#: The `get_item*` members, which is all the R rules read.
+_ITEM_READS: Final = frozenset(name for name in READ_NAMES if name.startswith("get_item"))
+
+
+def _gate_read() -> str:
+    read = gates()["relation"].read
+    assert len(read) == 1, f"`_relation_is_visible` makes {sorted(read)}, not exactly one read"
+    return next(iter(read))
+
+
+def _roadmap() -> str:
+    return ROADMAP.read_text(encoding="utf-8")
+
+
+def _threat_model() -> str:
+    return THREAT_MODEL.read_text(encoding="utf-8")
+
+
+# -- R records: the read the relation gate decides on -----------------------------
+
+
+def _first(text: str, anchor: str, read: str) -> str | None:
+    names = _names(from_anchor(text, anchor), _ITEM_READS)
+    return None if names and names[0] == read else f"first read after {anchor!r} is {names[:1]}"
+
+
+def _last(text: str, anchor: str, read: str) -> str | None:
+    names = _names(from_anchor(text, anchor), _ITEM_READS)
+    return None if names and names[-1] == read else f"last read after {anchor!r} is {names[-1:]}"
+
+
+@dataclass(frozen=True)
+class Record:
+    label: str
+    text: Callable[[], str]
+    anchor: str
+    rule: Callable[[str, str, str], str | None]
+    #: `None` holds the record to the derived read; a name holds it to that name.
+    fixed: str | None = None
+
+
+_GATE: Final = (
+    Record(
+        "roadmap Phase C Security row",
+        lambda: _row(_roadmap(), "| **Security** |", "A graph response is a new disclosure family"),
+        "the visibility decision on each hop's endpoint",
+        _first,
+        fixed=FIXED_R,
+    ),
+    Record(
+        "roadmap section 1 T-21 bullet",
+        lambda: _block(_roadmap(), "T-21 was closed by two fixes"),
+        "each endpoint is",
+        _last,
+    ),
+    Record(
+        "threat model T-21 Amended in #832 block",
+        lambda: _block(_threat_model(), "> **Amended in [#832]"),
+        "`_relation_is_visible`",
+        _first,
+        fixed=FIXED_R,
+    ),
+    Record(
+        "threat model T-21 register row",
+        lambda: _row(_threat_model(), "| T-21 |", "An alias key colliding"),
+        "non-resolving",
+        _last,
+    ),
+    Record(
+        "CanonicalReadSession.get_item_exact docstring",
+        lambda: _doc(PORT, "get_item_exact", "CanonicalReadSession"),
+        "_relation_is_visible",
+        _first,
+    ),
+    Record(
+        "SqliteCanonicalStore.get_item_exact docstring",
+        lambda: _doc(STORE, "get_item_exact", "SqliteCanonicalStore"),
+        "`_relation_is_visible`",
+        _first,
+    ),
+    Record(
+        "migration_alias_guards module docstring",
+        lambda: _module_doc(ALIAS_GUARDS),
+        "``_relation_is_visible``",
+        _first,
+    ),
+    Record(
+        "index_builder visible-set comment",
+        lambda: _comment(INDEX_BUILDER, "_relation_is_visible"),
+        "_relation_is_visible",
+        _first,
+    ),
+    Record(
+        "index_builder relation-count docstring",
+        lambda: _doc(INDEX_BUILDER, "_relation_secrets"),
+        "the same answer",
+        _first,
+    ),
+)
+
+
+@pytest.mark.parametrize("record", _GATE, ids=[r.label for r in _GATE])
+def test_a_record_names_the_read_the_relation_gate_makes(record: Record) -> None:
+    """RED means a record names another read as the one `_relation_is_visible` makes (#832).
+
+    Most records are held to the read derived from the call site, so moving the
+    gate to another read reddens them all at once. The two held to `FIXED_R` are
+    the normative and the dated ones; they redden only if their own text changes.
+    """
+    expected = record.fixed or _gate_read()
+    text = record.text()
+
+    failure = record.rule(text, record.anchor, expected)
+
+    assert text.strip(), f"record not found: {record.label} is empty"
+    assert failure is None, f"{record.label} does not name {expected}: {failure}"
+
+
+def test_the_fixed_read_name_is_the_read_the_relation_gate_makes() -> None:
+    """RED means the relation gate no longer reads through `FIXED_R`, and only this test blames it.
+
+    The records held to `FIXED_R` state what a per-hop gate must do and what 0.2.3
+    did. A gate reverted to the joined read leaves them true, so it is the code
+    that is wrong, and this is the assertion that says so.
+    """
+    read = _gate_read()
+
+    assert read == FIXED_R, (
+        f"`_relation_is_visible` reads through {read}; the normative Security row and the "
+        f"dated T-21 block still say {FIXED_R}, which is what the code must go back to"
+    )
+
+
+# -- Post-gate records: what a gate reads after it clears a row -------------------
+
+
+def _content_check() -> Gate:
+    return gates()["search"].narrowed_to(joined_readers())
+
+
+def _empty() -> Gate:
+    return Gate("none", frozenset(), frozenset(), {})
+
+
+def _knowledge_get_and_search() -> Gate:
+    return combined("knowledge.get", "search")
+
+
+def _t26() -> str:
+    return _block(_threat_model(), "**The fix: gate on metadata")
+
+
+def _t23_control() -> str:
+    return _block(
+        _threat_model(), "**Control — served-content identity at the serve gate, both sides.**"
+    )
+
+
+def _t23_not_null() -> str:
+    return _block(_threat_model(), "**The fail-closed-on-`None` handling relies on")
+
+
+_POST_GATE: Final = (
+    PostGate("T-26 fix lead", lambda: _lead(_t26()), _empty, sites="none"),
+    PostGate(
+        "T-26 fix bullet, knowledge.get",
+        lambda: _bullet(_t26(), "**`knowledge.get`**"),
+        lambda: gates()["knowledge.get"],
+    ),
+    PostGate(
+        "T-26 fix bullet, search",
+        lambda: _bullet(_t26(), "**Search**"),
+        lambda: gates()["search"],
+    ),
+    PostGate(
+        "T-26 fix bullet, _relation_is_visible",
+        lambda: _bullet(_t26(), "**`_relation_is_visible`**"),
+        lambda: gates()["relation"],
+    ),
+    PostGate(
+        "T-26 register row",
+        lambda: _row(_threat_model(), "| T-26 |", "A canonical read materialises"),
+        _empty,
+        exact=False,
+        sites="none",
+    ),
+    PostGate(
+        "T-23 Control paragraph",
+        _t23_control,
+        _content_check,
+        names_gate_read=True,
+    ),
+    PostGate("T-23 NOT NULL paragraph", _t23_not_null, _content_check, sites="none"),
+    PostGate(
+        "T-21 Amended in #832 block",
+        lambda: _block(_threat_model(), "> **Amended in [#832]"),
+        _content_check,
+        exact=False,
+        contrast=True,
+    ),
+    PostGate(
+        "KnowledgeItem.current_served_content_sha256 field comment",
+        lambda: _comment_above(KNOWLEDGE, "current_served_content_sha256: ContentHash | None"),
+        _content_check,
+        exact=False,
+    ),
+    PostGate(
+        "KnowledgeItem.with_revision comment",
+        lambda: _comment(KNOWLEDGE, "is deliberately not set here"),
+        _content_check,
+        exact=False,
+    ),
+    PostGate(
+        "CanonicalVisibility._served memo comment",
+        lambda: _comment(VISIBILITY, "Memoised per item so"),
+        lambda: gates()["search"],
+        sites="some",
+    ),
+    PostGate(
+        "CanonicalVisibility.cleared docstring, the reads",
+        lambda: _doc(VISIBILITY, "cleared", "CanonicalVisibility"),
+        lambda: gates()["search"],
+        at="the body is read",
+        span=2,
+    ),
+    PostGate(
+        "CanonicalVisibility.cleared docstring, the count",
+        lambda: _doc(VISIBILITY, "cleared", "CanonicalVisibility"),
+        _content_check,
+        at="(The body-carrying",
+        sites="none",
+    ),
+    PostGate(
+        "CanonicalVisibility._may_surface None comment",
+        lambda: _comment(VISIBILITY, "a check that cannot be performed"),
+        _content_check,
+        sites="none",
+    ),
+    PostGate(
+        "CanonicalReadSession.get_item_metadata docstring",
+        lambda: _doc(PORT, "get_item_metadata", "CanonicalReadSession"),
+        _knowledge_get_and_search,
+        at="a body is read only after",
+    ),
+    PostGate(
+        "SqliteCanonicalStore.get_item_metadata docstring",
+        lambda: _doc(STORE, "get_item_metadata", "SqliteCanonicalStore"),
+        _knowledge_get_and_search,
+        at="a body is read only after",
+        names_relation_read=True,
+    ),
+    PostGate(
+        "CanonicalReadSession.get_item_exact docstring",
+        lambda: _doc(PORT, "get_item_exact", "CanonicalReadSession"),
+        _content_check,
+        exact=False,
+    ),
+    PostGate(
+        "SqliteCanonicalStore.get_item_exact docstring",
+        lambda: _doc(STORE, "get_item_exact", "SqliteCanonicalStore"),
+        _content_check,
+        exact=False,
+    ),
+    PostGate(
+        "_item_with_current_content_from_row docstring, the joined reads",
+        lambda: _doc(STORE, "_item_with_current_content_from_row"),
+        _content_check,
+        at="The joined reads",
+        exact=False,
+    ),
+    PostGate(
+        "_ITEM_WITH_CURRENT_CONTENT_SQL comment",
+        lambda: _comment_above(STORE, "_ITEM_WITH_CURRENT_CONTENT_SQL: Final"),
+        _content_check,
+        exact=False,
+    ),
+)
+
+
+@pytest.mark.parametrize("record", _POST_GATE, ids=[r.label for r in _POST_GATE])
+def test_a_record_names_the_reads_its_gate_makes_after_it_clears_a_row(record: PostGate) -> None:
+    """RED means a record names the wrong read, or call site, as a gate's body read (#832).
+
+    `knowledge.get` reads a body through `current_revision`, and search through two
+    call sites: `_served_item`'s joined `get_item_exact`, for every row that
+    clears, and `_surfaced`'s `get_revision`, for the first `limit`. The records
+    said one reader and "once"; each is now held to the readers and call sites
+    derived for the gate it describes (`gate_read_facts.gates`).
+    """
+    text = record.text()
+    assert text.strip(), f"record not found: {record.label} is empty"
+
+    problems = _problems(
+        text,
+        record,
+        record.gate(),
+        Facts(gates(), body_readers(), joined_readers()),
+    )
+
+    assert not problems, f"{record.label}: " + "; ".join(problems)
+
+
+# -- The Tests row: "body-free" held to whether the gate's read is ----------------
+
+_NEGATED: Final = re.compile(r"\b(?:not|never|no)\b.{0,20}body-free")
+
+
+def _row_claims_body_free(row: str) -> bool:
+    """Whether the row asserts a body-free read: the word, not negated within twenty characters."""
+    return "body-free" in row and _NEGATED.search(row) is None
+
+
+def _agrees(row: str, read: str) -> bool:
+    return _row_claims_body_free(row) is (read not in body_readers())
+
+
+def test_the_t21_block_names_the_reachability_read_the_lookups_make() -> None:
+    """RED means the block names another read as the one the lookups resolve through.
+
+    The sentence says Part A's reachability read is the bodyless `get_item_metadata`
+    and that nothing in `src/` calls the session's `get_item`. The first is derived
+    from `knowledge_get` and `CanonicalVisibility._lookup`; the second is held by
+    `test_adr_0038_gate_read_facts.py`, so here `get_item` is only required to be
+    the one other read the sentence names.
+    """
+    block = _block(_threat_model(), "> **Amended in [#832]")
+    sentence = sentence_containing(block, "reachability read moved")
+
+    names = set(_names(sentence))
+
+    assert names == gates()["knowledge.get"].read | gates()["search"].read | {"get_item"}, (
+        f"the Amended block's reachability sentence names {sorted(names)}"
+    )
+
+
+def test_the_roadmap_tests_row_says_body_free_exactly_when_the_gate_read_is() -> None:
+    """RED means the Tests row promises a body-free hop read the gate does not make (T-26).
+
+    Both directions are driven through the same predicate: the live row against
+    the live read, and against the joined read, which selects a body and so must
+    disagree. Negation is read within twenty characters of the word (`not`,
+    `never`, `no`); a longer detour, or a negation spelled another way, is not seen.
+    """
+    row = _row(_roadmap(), "| **Tests** |", "Equality extension")
+
+    assert _agrees(row, _gate_read()), (
+        f"the Tests row and the gate's read ({_gate_read()}) disagree on whether the hop read "
+        "is body-free"
+    )
+    assert not _agrees(row, "get_item_exact"), (
+        "the row's claim also agrees with the joined read, so the comparison cannot fail"
+    )
+    assert not _row_claims_body_free("goes through a read which need not be body-free"), (
+        "a negated 'body-free' must not count as the claim (adversarial U11)"
+    )
+    assert _row_claims_body_free("goes through the non-resolving, body-free read path"), (
+        "control: the row's own wording is the claim"
+    )
+
+
+# -- The Phase C Security row: the properties an equivalent must keep -------------
+
+
+def test_the_security_row_names_the_properties_of_the_relation_gate_an_equivalent_must_keep() -> (
+    None
+):
+    """RED means the row asks a per-hop gate for properties the relation gate does not have (#832).
+
+    ADR-0038's *Positive* lists three properties beside the two the row already
+    named: both endpoints judged on status and sensitivity, a missing endpoint
+    withheld, and the read scoped to the project. The prose side is read here and
+    the fact side is held by pins that already exist:
+    `test_adr_0038_model.py::test_the_relation_gate_reads_both_endpoints_through_the_non_resolving_metadata_read`
+    (the loop over both endpoints, `may_surface` and `may_disclose` called) and
+    `::test_the_relation_gate_withholds_a_missing_endpoint_and_reads_within_the_project`
+    (a `None` endpoint returns False, the scoped argument tuple). Not held: that a
+    future traversal keeps them; only that the row asks.
+    """
+    row = _row(_roadmap(), "| **Security** |", "A graph response is a new disclosure family")
+    asked = from_anchor(row, "An equivalent must also keep")
+    relation = gates()["relation"]
+
+    assert {"may_surface", "may_disclose"} <= callees(
+        function(tree(TOOLS_FILE), "_relation_is_visible")
+    ), "the relation gate no longer calls both axes, which the row asks a hop to keep"
+    assert "`may_surface`" in asked and "`may_disclose`" in asked, (
+        "the row does not name both axes the relation gate judges an endpoint on"
+    )
+    assert "a missing endpoint withheld" in asked, (
+        "the row does not ask for a missing endpoint withheld"
+    )
+    assert "`_ITEM_METADATA_SQL`'s `project_id`" in asked, (
+        "the row does not name the project scope, and where the gate takes it from"
+    )
+    assert relation.sites == {"_relation_is_visible"}, (
+        "the relation gate moved off `_relation_is_visible`"
+    )
+
+
+# -- The per-candidate read on the search path: two records that still named get_item ----
+
+#: The commit that joined `knowledge_revisions` into `get_item` (0.1.0.dev13), and
+#: the version that names it. Evidence, by `git show`: the count of
+#: `JOIN knowledge_revisions` in the store's `get_item` is 0 at `39c529ad^` and 1 at
+#: `39c529ad`. Not derived from git at test time, because CI checkouts may be
+#: shallow; the key's weak half is that this constant is hand-kept.
+_JOIN: Final = ("39c529ad", "0.1.0.dev13")
+
+#: The commits the records cite that precede `_JOIN`; `21e1ba9` recorded the 1.4 ms,
+#: 15 us, 6.047 ms, 0.09 s, 0.5 s and 0.163 ms figures, when `get_item` read
+#: `SELECT * FROM knowledge_items` with no join. Hand-kept too.
+_PRE_JOIN: Final = ("21e1ba9",)
+
+#: A commit or a version: what makes a sentence history.
+_DATE: Final = re.compile(r"\b(?=[0-9a-f]*\d)[0-9a-f]{7,40}\b|\b0\.\d+\.\d+(?:\.dev\d+)?\b")
+_CALLS_JOINED: Final = re.compile(r"\bjoined\b|\bbody-carrying\b")
+_CORRECTION: Final = re.compile(r"\(corrected in #\d+:[^)]*\)")
+
+
+def _undated_get_item(text: str) -> list[str]:
+    """The sentences of *text* that name the bare `get_item` wrongly for their date.
+
+    A sentence naming `get_item` needs a commit or version in it, or, where it says
+    "that commit's", in the sentence before. A sentence that is dated to a commit in
+    `_PRE_JOIN` and does not itself name `_JOIN` must not call that read joined or
+    body-carrying; a "(corrected in #N: ...)" parenthetical is not read. Not seen: a
+    pre-join commit missing from `_PRE_JOIN`; a false clause in the correction
+    parenthetical; a date that belongs to another read in the same sentence; a
+    wrong claim about `get_item` that uses neither word.
+    """
+    found = sentences(text)
+    faults: list[str] = []
+    for i, sentence in enumerate(found):
+        if "get_item" not in _names(sentence):
+            continue
+        read = _CORRECTION.sub("", sentence)
+        window = " ".join(found[i - 1 : i + 1]) if "that commit" in read and i else read
+        pre_join_called_joined = (
+            any(commit in window for commit in _PRE_JOIN)
+            and not any(join in read for join in _JOIN)
+            and _CALLS_JOINED.search(read)
+        )
+        if not _DATE.search(window) or pre_join_called_joined:
+            faults.append(sentence)
+    return faults
+
+
+def _visibility_class_doc() -> str:
+    owner = klass(tree(REPO_ROOT / VISIBILITY), "CanonicalVisibility")
+    return ast.get_docstring(owner) or ""
+
+
+_PER_CANDIDATE: Final = (
+    ("CanonicalVisibility class docstring", _visibility_class_doc, "per distinct document"),
+    (
+        "SqliteCanonicalStore.__enter__ comment",
+        lambda: _comment(STORE, "is a comprehension over the retriever's"),
+        "never calls",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("label", "text", "anchor"), _PER_CANDIDATE, ids=[row[0] for row in _PER_CANDIDATE]
+)
+def test_a_record_names_the_bodyless_read_as_the_per_candidate_read_on_the_search_path(
+    label: str, text: Callable[[], str], anchor: str
+) -> None:
+    """RED means a record names `get_item` as search's per-candidate read (#832, code-review HIGH).
+
+    Both records kept saying `get_item` after 0.2.3 moved `CanonicalVisibility._lookup`
+    to `get_item_metadata`, contradicting the T-21 Amended block. The sentence
+    naming the per-candidate read must name exactly the search gate's derived read,
+    and `get_item` may appear only as dated history that names the right read for
+    its date: the class docstring's 1.4 ms figure, recorded in `21e1ba9` before the
+    join, priced a joinless `get_item`. Not seen: a
+    record that names no read, or names `get_item_metadata` and is wrong about how
+    often it is paid.
+    """
+    record = text()
+    decided_on = gates()["search"].read
+
+    sentence = sentence_containing(record, anchor)
+
+    assert set(_names(sentence)) == decided_on, f"{label} names {_names(sentence)}: {sentence!r}"
+    assert _undated_get_item(record) == [], f"{label} names `get_item` undated"
+
+
+def test_the_undated_get_item_rule_reads_history_and_nothing_else() -> None:
+    """RED means the rule refuses right-read history or passes a sentence naming the wrong read."""
+    false_dating = (
+        "Recorded in ``21e1ba9`` and measured before 0.2.3, when that read was the "
+        "joined, body-carrying ``get_item``: 1.4 ms per hundred items."
+    )
+    corrected = (
+        "Recorded in ``21e1ba9``: 1.4 ms per hundred items. The 1.4 ms priced that "
+        "commit's ``get_item``: the alias lookup and the pointer row, with no join. "
+        "0.1.0.dev13 (``39c529ad``) joined the current body into ``get_item``, and "
+        "0.2.3 split the pointer read back out."
+    )
+    reworded = (
+        "``21e1ba9`` recorded 1.4 ms per hundred items, priced on a joinless ``get_item``. "
+        "After ``39c529ad`` that read was joined and body-carrying ``get_item``."
+    )
+    current = "So this costs one ``get_item`` per distinct document per request."
+
+    assert _undated_get_item(corrected) == [], "control: the corrected history is allowed"
+    assert _undated_get_item(reworded) == [], "control: a true rewording is allowed"
+    assert _undated_get_item("It costs one bodyless ``get_item_metadata`` per document.") == [], (
+        "control: `get_item_metadata` is not the bare `get_item`"
+    )
+    assert _undated_get_item(false_dating) == [false_dating], (
+        "the pre-join `joined` dating is refused"
+    )
+    assert _undated_get_item(current) == [current], "an undated current read is refused"
+
+
+def _cleared_doc() -> str:
+    owner = klass(tree(REPO_ROOT / VISIBILITY), "CanonicalVisibility")
+    return ast.get_docstring(methods(owner)["cleared"]) or ""
+
+
+def test_the_cleared_paragraph_dates_its_first_figures_to_the_commit_that_recorded_them() -> None:
+    """RED means T-17's first figures are dated to a read they never priced (#832, HIGH N-1).
+
+    The 15 us, 6.047 ms and 0.163 ms figures were recorded in `21e1ba9`, before
+    `39c529ad` joined the body into `get_item`; dating them "before 0.2.3, with the
+    body-carrying read" made the upper-bound claim rest on a read they never
+    priced. Not seen: a figure elsewhere in the paragraph, or a sentence that names
+    `21e1ba9` and is wrong in other words.
+    """
+    record = _cleared_doc()
+
+    sentence = sentence_containing(record, "These figures")
+
+    assert _PRE_JOIN[0] in sentence, (
+        f"the first figures are not dated to their commit: {sentence!r}"
+    )
+    assert not _CALLS_JOINED.search(_CORRECTION.sub("", sentence)), sentence
+    assert _undated_get_item(record) == [], "`cleared` names `get_item` wrongly for its date"
+
+
+# -- The cleared docstring's count, and the T-23 correction note -------------------
+
+
+def _axes_before_the_body_read() -> list[str]:
+    """The axes `_may_surface` checks, in source order, before it calls `_served_item`.
+
+    Key: a top-level `if` of `_may_surface` whose test calls `may_surface` (status),
+    calls `may_disclose` (sensitivity) or compares `current_revision_id` with `!=`
+    (revision). An `if` of another shape, such as the `is None` guard, is not an axis.
+    """
+    owner = klass(tree(REPO_ROOT / VISIBILITY), "CanonicalVisibility")
+    body = methods(owner)["_may_surface"].body
+    served = next(i for i, node in enumerate(body) if "_served_item" in callees(node))
+    axes: list[str] = []
+    for node in body[:served]:
+        if not isinstance(node, ast.If):
+            continue
+        test = node.test
+        unequal = any(
+            isinstance(n, ast.Compare) and isinstance(n.ops[0], ast.NotEq) for n in ast.walk(test)
+        )
+        if "may_surface" in callees(test):
+            axes.append("status")
+        if "may_disclose" in callees(test):
+            axes.append("sensitivity")
+        if unequal and "current_revision_id" in ast.unparse(test):
+            axes.append("revision")
+    return axes
+
+
+def test_the_cleared_docstring_counts_body_reads_over_the_rows_that_cleared_the_pointer_axes() -> (
+    None
+):
+    """RED means the count parenthetical says which rows get a body read in words the code refutes.
+
+    The pre-fix parenthetical called them "the distinct *surfaceable* item count"
+    that "carry no withheld row". A GHSA-3f65 content-mismatch row is withheld
+    after its one `get_item_exact`, so the claim holds only for the axes before
+    it: status, sensitivity and revision, derived here from the order of
+    `_may_surface`'s checks. Not seen: the word "subset", or the count itself.
+    """
+    parenthetical = from_anchor(
+        _doc(VISIBILITY, "cleared", "CanonicalVisibility"), "(The body-carrying"
+    )
+    axes = _axes_before_the_body_read()
+    spelled = ", ".join(axes[:-1]) + " and " + axes[-1]
+
+    assert axes == ["status", "sensitivity", "revision"], f"`_may_surface` checks {axes}"
+    assert f"rows that clear {spelled}" in parenthetical, (
+        f"the parenthetical does not say the rows are those that clear {spelled}"
+    )
+    assert "surfaceable" not in parenthetical, (
+        "it names the rows 'surfaceable', which is not the key"
+    )
+    assert "carry no withheld row" not in parenthetical, (
+        "it says a row with a body read is never withheld, which a content mismatch refutes"
+    )
+
+
+def test_the_t23_correction_note_names_the_read_the_search_gate_decides_on() -> None:
+    """RED means the note on the T-23 paragraphs names another read as the one the gate decides on.
+
+    The note says that since 0.2.3 the gate decides on the bodyless read and the
+    hash comes from a separate joined one. It names one session read, and it must
+    be the one `CanonicalVisibility._lookup` makes. Not seen: the joined read,
+    which the note does not name, and "only for a row that has cleared the gate".
+    """
+    note = _block(_threat_model(), "two paragraphs below described the 0.1.0.dev13 read")
+
+    named = set(_names(note))
+
+    assert named == gates()["search"].read, f"the T-23 correction note names {sorted(named)}"
