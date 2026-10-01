@@ -26,6 +26,7 @@ from adr_0038_support import (
     ROADMAP,
     SAMPLE_MIGRATION,
     TRACEABILITY,
+    _adr,
     _arms,
     _collapsed,
     _function,
@@ -157,8 +158,52 @@ def test_the_mcp_input_schema_types_kind_as_a_string_the_handler_closes(schema: 
     )
 
 
+#: Removal stems. `deprecat` is left out because `deprecateItem` is an operation.
+_REMOVAL: Final = re.compile(
+    r"(?i)remov|retir|delet|drop|withdr|eliminat|discontinu|retract|abolish|prun|struck|strik"
+)
+
+
+def _outside_amendments(text: str) -> tuple[str, list[str]]:
+    """``text`` without its amendment runs, and those runs, collapsed.
+
+    A run is consecutive lines opening ``>``, indented or not; it is an amendment
+    when its first line opens ``> **Amended``. Any other blockquote stays in.
+    """
+    kept: list[str] = []
+    amendments: list[str] = []
+    run: list[str] = []
+    for line in [*text.splitlines(), ""]:
+        if line.lstrip().startswith(">"):
+            run.append(line.lstrip().removeprefix(">"))
+            continue
+        if run and run[0].lstrip().startswith("**Amended"):
+            amendments.append(_collapsed(" ".join(run)))
+        else:
+            kept.extend(f">{quoted}" for quoted in run)
+        run = []
+        kept.append(line)
+    return "\n".join(kept), amendments
+
+
 def test_adr_0005_closes_the_set_over_both_operations_and_governs_only_adding_one() -> None:
-    text = ADR_0005.read_text(encoding="utf-8")
+    """Reach: ADR-0005 outside ADR-0039's amendment run, since that run governs removal.
+
+    Removal is keyed by the stems in :data:`_REMOVAL` -- remov, retir, delet, drop,
+    withdr, eliminat, discontinu, retract, abolish, prun, struck and strik, case
+    folded; a synonym outside them is outside the key. Every other amendment run is
+    held to name no removal either,
+    so a later amendment stating a removal rule goes RED for a person.
+
+    ADR-0038's *Negative* sentence that ADR-0005 "says nothing of removing one" is
+    held as true when measured, and superseded, by ADR-0038's own amendment block.
+    """
+    text, amendments = _outside_amendments(ADR_0005.read_text(encoding="utf-8"))
+    adr_0039 = "Amended in Phase C, by [ADR-0039](0039-closed-set-extension-compatibility.md)"
+    others = [amendment for amendment in amendments if not amendment.startswith(adr_0039)]
+    head = _adr().read_text(encoding="utf-8").split("\n## Context\n", 1)[0].splitlines()
+    block = "\n".join(line.removeprefix(">") for line in head if line.startswith(">"))
+    first_bullet = _collapsed(re.split(r"\n\s*- ", block)[1])
     closed = re.search(r"The operation set is closed: (.*?)\. Adding", " ".join(text.split()))
     residue = re.sub(r"\b(?:removeRelation|removeAlias|removeEvidence)\b", "", text)
 
@@ -171,7 +216,16 @@ def test_adr_0005_closes_the_set_over_both_operations_and_governs_only_adding_on
         in _collapsed(text)
     )
     assert re.search(r"(?i)remov", text), "positive control: the removal key reads this file"
-    assert not re.search(r"(?i)remov|retir|delet|drop|withdr", residue)
+    assert not _REMOVAL.search(residue)
+    assert not _REMOVAL.search(_outside_amendments("> **Amended in X.** Removal is governed.")[0])
+    assert _REMOVAL.search(_outside_amendments("> A quoted rule: removal is refused.")[0])
+    assert len(others) == len(amendments) - 1, "ADR-0039's amendment run is gone"
+    assert [a for a in others if a.startswith("Amended in Milestone 7")], "positive control"
+    assert [a[:60] for a in others if _REMOVAL.search(a)] == []
+    assert (
+        'That item\'s sentence that ADR-0005 "says nothing of removing one" was true when '
+        "measured and is not now: ADR-0005 carries an amendment pointing to ADR-0039."
+    ) in first_bullet
 
 
 def test_both_operations_are_published_admitted_to_drafts_and_parsed_into_their_own_classes() -> (
