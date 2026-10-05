@@ -6669,8 +6669,10 @@ path reads no body. The timing measurement corroborates it; it is not the proof.
 **Face 4 — the write path, built body-free at slice B4 (0.3.0).** ADR-0032's
 write-intent tools add a fourth consumer of the same canonical read:
 `knowledge.proposeChange`'s optimistic-concurrency check reads a caller-scoped
-`current_revision` closure (`mcp/tools.py`, `_draft_only_proposals`) to answer
-"what revision is this item at". It reads `get_item_metadata`, not the
+closure (`mcp/tools.py`, `_draft_only_proposals`) to answer "what revision is
+this item at": `current_revision` as built, renamed `current_item` in 0.5.1,
+when it began returning the item's labels as well (T-28). It reads
+`get_item_metadata`, not the
 body-joining `get_item`, so a withheld item's `expectedRevision` refusal
 materialises no body and its timing does not scale with the withheld body's
 size — the write path never shipped the leak (`proposeChange` is unreleased,
@@ -6708,6 +6710,213 @@ reachable from a tool. The bytecode sweep that enumerates every registered tool
 and asserts none reaches a *canonical* write is a second, narrower control: it
 reaches one level and so does not, by itself, hold the first clause — which is
 why the facade above is what does (ADR-0032 decision 8).
+
+#### T-28 — A content update re-asserts an existing item's governance labels, so an accepted proposal lowers its sensitivity or readmits it (Tampering / Information disclosure, High — closed in 0.5.1 at draft and `accept`; the merge-order race is detected, not prevented)
+
+Class: **a proposal moves a gate label input in the permissive direction** —
+`status` from non-surfaceable to surfaceable, or `sensitivity` to a lower class.
+Named by its root cause: `KnowledgeItem.with_revision` (`domain/knowledge.py`)
+gives an item the status, owner, kind, namespace, trust level and sensitivity
+of every revision an `upsertRevision` lands, so a content update is not neutral
+about the item's labels. Live over MCP in shipped Core 0.3.0 through 0.5.0;
+closed in 0.5.1
+([GHSA-v2qg-23fc-7fqp](https://github.com/theurian/theurian/security/advisories/GHSA-v2qg-23fc-7fqp)).
+The decision record is
+[ADR-0032](../adr/0032-the-write-intent-mcp-tool-surface.md)'s amendment of the
+same name; [ADR-0033](../adr/0033-knowledge-candidate-generation.md) and
+[ADR-0027](../adr/0027-accept-validates-before-it-moves.md) carry its matching
+amendments.
+
+**The faces.** The drafter, `ProposalService.draft`, sits behind
+`theurian propose`, `knowledge.proposeChange`,
+`review.generateKnowledgeCandidate` and `theurian okf import`. Before 0.5.1 it
+wrote every update as if the item held no labels:
+
+| Face | What the merged update did | Reach before 0.5.1 |
+| :-- | :-- | :-- |
+| A named lower `sensitivity` | The item took the lower class | Default configuration over MCP; on the CLI, any item; the drafted migration shows it |
+| An omitted `sensitivity` or `trustLevel` | Absent from the migration, so the loader's `internal` or `unverified` replaced the item's label, with nothing in the diff | Over MCP only for an item in the caller's view, so a `confidential` item needed a serving ceiling raised to `confidential`; on the CLI, any item |
+| `review.generateKnowledgeCandidate` | Named `internal` on every update | As the omitted face |
+| An omitted `namespace` | Written as the item id's own prefix | Visible in the diff |
+| `status: approved` on every drafted revision | A `deprecated`, `superseded` or `rejected` item was readmitted, `rejected` included | `theurian propose` for any retired item; over MCP, an item a `createItem` made and nothing revised, because the write tools answer a retired item that has a revision as an absent id |
+
+Nothing reached a reader without a human accepting the proposal and merging it.
+
+**Why this is not T-12.** T-12 holds that no tool reaches approved state, and
+it still holds: approval is a human merge. This entry is what that merge
+approves without seeing. A merge approves what its diff shows, and neither an
+omitted label nor the order in which two migrations replay is in a diff.
+
+**Severity: High.** Every face needs a human to accept a proposal and merge it.
+On the CLI, `theurian propose` reaches every face but the candidate tool's, for
+any item, and an agent reaches it through the plugin's `/theurian:propose`,
+whose front matter grants `Bash(theurian:*)`; there the omitted-label face moves
+the item's label with nothing in the diff, so the reviewer approves a label
+change the diff does not show. Over MCP that face needs the item in the
+caller's view — for a `confidential` item, a raised ceiling. The two faces
+reachable over MCP in the default configuration, a named lower sensitivity and
+the readmission of a retired item with no revision, write the label they set
+into the drafted migration; what the diff does not show is the label the item
+held before. ADR-0032's amendment graded the post-accept race (residual 6
+below) CRITICAL as a review finding, on the anchor that a merge approves only
+what its diff shows, and records the decision to report it rather than refuse
+it. The heading grades the threat as shipped; what 0.5.1's controls leave open
+is the residual list below.
+
+**Controls (0.5.1)**, each symbol in `application/proposal_service.py` unless
+another module is named:
+
+1. **Inheritance at draft.** For an item the drafter's lookup returns, an
+   omitted `sensitivity`, `trustLevel` or `namespace` is written into the
+   migration as the item's current value (`proposal_service.py ::
+   _inheriting`), so the reviewer reads the label the item will hold. The CLI's
+   and the import's lookup returns any item the landed migrations create
+   (`cli/migration_pipeline.py :: current_item_in`, which replays them into a
+   throwaway store); the MCP tools' returns one the caller may see
+   (`mcp/tools.py :: register._draft_only_proposals.current_item`, gated by
+   `may_surface(…, include_unapproved=True)` and `may_disclose`).
+   `review.generateKnowledgeCandidate`'s `internal` is marked as a default and
+   dropped for such an item.
+2. **Draft refusals.** A named sensitivity below the item's is refused
+   (`_refuse_a_lower_sensitivity`) in a constant that names no level, with the
+   one declassification path as its remedy: a hand-authored
+   `changeSensitivity`. A retired item is refused (`_refuse_a_retired_item`) in
+   a constant that names no status, with the one readmission path: a
+   hand-authored `restoreItem`. Only the CLI's and the import's lookups return a
+   retired item; over MCP it is answered as an absent id, and the `accept`
+   floors are what refuse its draft. `theurian okf import` records that refusal
+   as `the proposal service refused it: ProposalError`
+   (`application/okf_import.py :: _draft_refusal_literal`), which does not name
+   `restoreItem`.
+3. **The `accept` floors.** `theurian propose accept` replays the landed
+   migrations with the proposal and without it, and refuses, with exit 1 and
+   nothing moved, when an item the landed set holds ends at a lower class by
+   `DISCLOSURE_ORDER` (`application/item_labels.py :: lowered_sensitivities`)
+   or ends surfaceable where the landed set leaves it retired
+   (`:: readmitted_items`, judged by `may_surface(…, include_unapproved=True)`).
+   Both compare the state a replay leaves, never the operations a document
+   names, so an operation, a key or a migration order nobody listed meets the
+   same comparison, and a proposal drafted by an earlier Core is floored like
+   any other. When the landed set does not replay on its own there is nothing
+   to compare, and `accept` refuses.
+4. **The permissive-move report.** `theurian migrate validate` and
+   `theurian migrate apply` print `permissiveMoves`: each replayed
+   `upsertRevision` that itself loosened `status` or `sensitivity`, in a
+   migration that left the item looser at its end than at its start
+   ([the migration format](../protocol/migrations.md#permissive-moves-are-reported-not-refused)).
+   It refuses nothing and moves no exit code, and no MCP tool returns it.
+5. **`accept` never introduces or re-attributes a report row.** It refuses a
+   proposal whose replay reports a row whose `(migrationId, itemId, field,
+   undoes)` the landed migrations' own report lacks
+   (`application/permissive_moves.py :: introduced_moves`, called from
+   `_refuse_a_reported_upsert`), so it refuses both a new row and a held row
+   whose `undoes` the proposal would change. The baseline is the landed-alone
+   report, so a row the history already holds, naming the same `undoes`, never
+   blocks an accept. The remedy is a new migration that replays after the
+   landed one, routed by every operation kind the refused proposal carries
+   (`proposal_service.py :: _redraft_remedy`).
+
+**What holds it** is recorded test by test, each described from its body, in
+ADR-0032's amendment (its *What holds it* and the paragraphs on the floors,
+the report and the report-row refusal) and in
+[the migration format](../protocol/migrations.md#permissive-moves-are-reported-not-refused).
+Two are named here because the residuals below rest on them.
+`test_permissive_move_report.py::test_an_update_accepted_after_a_withdrawal_that_sorts_first_is_reported_undoing_it`
+accepts and applies an update, then writes a deprecation, or a reclassification
+to `confidential`, whose migration id sorts before the update's; it asserts
+that `migrate validate` and `migrate apply` exit 0 and each report exactly one
+row, the update's, with `kind: undoes` naming the withdrawal, and that the item
+ends `approved` and `internal`.
+`test_accept_never_introduces_a_report_row.py::test_a_raise_minted_before_an_update_that_already_undoes_a_landed_raise_is_refused`
+holds the re-attribution: it asserts that the report before the accept is
+exactly a landed update's `sensitivity` row, `confidential` to `internal`,
+undoing a landed reclassification to `confidential`; that accepting a
+`restricted` raise minted before the update exits 1 with an error naming the
+update's migration id, the item and `sensitivity` and reading "from restricted
+to internal", and a remedy naming the update's migration id and not
+`theurian propose`; that nothing moved under the proposals, migrations or
+knowledge directories; and that after `migrate apply` the report is the one it
+started with.
+
+**One bit the draft refusal publishes.** Over MCP the lowering refusal runs
+only for an item the caller's lookup returns, so a withheld id is answered as
+an absent one. For an item with a revision, refused-or-drafted adds nothing,
+since `knowledge.get` publishes its `sensitivity`. For an item a `createItem`
+made and nothing revised, it does: `knowledge.get` answers that item as not
+present, while `knowledge.proposeChange` refuses a lowering for it and drafts
+the same call for an absent id. The item is in the caller's view, the
+population ADR-0032 decision 6's bind leaves out, and the amendment records
+it there.
+
+**Residuals.** 0.5.1 does not close these.
+
+1. **The floors compare at `accept` time only.** Nothing compares labels when
+   a pull request merges or when `migrate apply` runs.
+2. **A proposal accepted before the upgrade and merged after it is not
+   floored.** `accept` is the only floor; the migration is already under
+   `.theurian/migrations/`, and `migrate apply` lands it. Its upsert is
+   reported if it meets the report's two clauses.
+3. **A state database an earlier Core built is reused for an unchanged
+   migration set, so `migrate apply` reports `[]`.** The state hash has no Core
+   version in it, and `apply` reports only the migrations it applies. Run
+   `theurian migrate validate` once after upgrading, which replays the whole
+   set. [#853](https://github.com/theurian/theurian/issues/853) tracks checking
+   which build wrote a state database.
+4. **A move between two retired statuses is not compared.** Neither the
+   status floor nor the report sees `deprecated` → `rejected`, because
+   `may_surface` answers both alike.
+5. **A hand-authored migration runs no floor, by design.** `migrate apply`
+   applies what was merged. Its upserts are reported; the sanctioned
+   `deprecateItem`, `restoreItem` and `changeSensitivity` are not.
+6. **The post-accept race is detected, not prevented, and no exit code
+   moves.** A withdrawal merged after an update was accepted, with a migration
+   id that sorts before the update's, is undone, and only `permissiveMoves`
+   says so. The operator actions below are the control.
+7. **One migration is one reviewed diff.** A migration that withdraws and
+   re-asserts an item, or lowers and restores it, nets out and is not
+   reported: its end is no looser than its start, and its reviewer saw both
+   operations.
+8. **An in-place withdrawal to `draft` or `proposed`, undone by the race, is
+   neither refused nor reported.** Both predicates read
+   `may_surface(…, include_unapproved=True)`, under which `draft`, `proposed`
+   and `approved` are all surfaceable, while the default serving flag serves
+   `approved` alone. So the race can put such an item back in front of a
+   default caller with no row.
+9. **Two sanctioned label operations merged against their id order replay so
+   that the later id wins, with no report.** A `changeSensitivity` raise and a
+   lowering, or a `deprecateItem` and a `restoreItem`, apply in migration-id
+   order whatever order they merged in, and neither is an upsert. It is the
+   same ordering root cause as residual 6, outside the upsert class the report
+   covers.
+10. **An accept whose withdrawal or raise a landed sanctioned operation with a
+    later migration id undoes is accepted, with no report row.**
+
+**A known cost, not a residual of the fix.** There is no way to acknowledge a
+row. A history that already holds a reported upsert, the original defect's
+victims included, is reported on every `migrate validate` and every
+`migrate apply` that replays it.
+
+**Outside the class.** Trust level, namespace, owner and kind feed no read
+gate, so neither floor compares them. A value a caller names lands as named,
+and `review.generateKnowledgeCandidate` and `theurian okf import` name
+`trustLevel: inferred` for an existing item by design (ADR-0033, ADR-0037).
+
+**Operator actions.**
+
+1. Run `theurian migrate validate` before merging any migration that withdraws
+   or raises a label, and read its `permissiveMoves`: first an in-place
+   `upsertRevision` re-declaring a revision `rejected`, `superseded` or
+   `deprecated`, or at a higher class; then a `deprecateItem`, and a
+   `changeSensitivity` that raises the class.
+2. Read the `permissiveMoves` that `theurian migrate apply` prints.
+3. Run `theurian migrate validate` once after upgrading to 0.5.1.
+
+**What would raise this entry.** A read gate that decides on a label input the
+floors do not compare; a write-intent tool that reaches `changeSensitivity` or
+`restoreItem`; an `accept` path that lands a proposal without both replays; a
+served path that returns `permissiveMoves`, whose rows name labels an item
+held before it was loosened; or the race reached without a human merging both
+migrations.
 
 #### T-18 — A reused revision id resolves an approved item to a withheld item's body (Information disclosure, **Critical** — closed in 0.1.0.dev3)
 
@@ -7673,8 +7882,9 @@ fix.
 | T-23 | A revision's served content drifts under an unchanged revision id, and a stale index serves it past the gate | I | Critical | Closed in 0.1.0.dev13 — serve gate keyed on `served_content_hash(title, body)` both sides, `INDEX_SCHEMA_VERSION` 6 → 7 forced rebuild; a new face of the derived-state-trust class T-19 (GHSA-3f65-gr36-qqx8); leaf-excerpt only, the `raptorPath[].title` face stays the T-17a residual (GHSA-97q9-xxfg-33r6) |
 | T-24 | A repository ships its own `.theurian/review/` and a local build serves it as review history | T | Medium | Accepted residual, recorded. SEC-15's triple on every row, and the promotion path out of the untrusted plane — ADR-0033's candidate generator, since slice B5 — ends at an unapproved proposal a human reads; the tool description and response schema state that the T-19 check is on the *store* and never on who wrote the records. Verifying evidence provenance is unowned, adjacent to [#575](https://github.com/theurian/theurian/issues/575) |
 | T-25 | An MCP error response names the operator's resolved filesystem layout | I | High | Closed in 0.2.0 — GHSA-923w-f36f-jcfq. Constant refusals interpolating nothing across both tool boundaries, executable cures from fixed vocabulary; pinned by the raise-site population test, the no-resolved-form response sweep and the executable-cure ratchet |
-| T-26 | A canonical read materialises a withheld item's body before the gate, so a refusal's timing carries the body's size | I | High | Closed in 0.2.3 — bodyless `get_item_metadata`/`get_item_exact_metadata` gate the three read paths (`knowledge.get`, `_relation_is_visible`, `_may_surface`) on the pointer row, a body read only after a row clears the gate (GHSA-3f65 preserved). ADR-0032's write-intent surface adds a fourth consumer — `proposeChange`'s caller-scoped `current_revision` lookup — also body-free (`get_item_metadata`), closed on the write path at slice B4 (0.3.0) with a content-independent ~9 µs existence residual ~155× below the same floor. Size-independent **by construction**: `_ITEM_METADATA_SQL` projects only `knowledge_items` columns and materialises no body, pinned bidirectionally by the zero-body-read counters (`test_pre_gate_body_materialization.py`) and the explicit-column projection fact test (`test_gate_call_sites.py`, RED on a `SELECT *` or a revisions join — closing the counters' method-name-keyed blind spot). Corroborated out of band: refusal identical at 256 B and 8 MiB, ~175× below TB-1's 1.40 ms floor (work log 2026-09-16-t26-timing). A canonical-store body-materialisation channel, distinct from T-17a (derived-index statistics) and T-22 (a per-row count term, #338) |
+| T-26 | A canonical read materialises a withheld item's body before the gate, so a refusal's timing carries the body's size | I | High | Closed in 0.2.3 — bodyless `get_item_metadata`/`get_item_exact_metadata` gate the three read paths (`knowledge.get`, `_relation_is_visible`, `_may_surface`) on the pointer row, a body read only after a row clears the gate (GHSA-3f65 preserved). ADR-0032's write-intent surface adds a fourth consumer — `proposeChange`'s caller-scoped lookup (`current_revision`, renamed `current_item` in 0.5.1) — also body-free (`get_item_metadata`), closed on the write path at slice B4 (0.3.0) with a content-independent ~9 µs existence residual ~155× below the same floor. Size-independent **by construction**: `_ITEM_METADATA_SQL` projects only `knowledge_items` columns and materialises no body, pinned bidirectionally by the zero-body-read counters (`test_pre_gate_body_materialization.py`) and the explicit-column projection fact test (`test_gate_call_sites.py`, RED on a `SELECT *` or a revisions join — closing the counters' method-name-keyed blind spot). Corroborated out of band: refusal identical at 256 B and 8 MiB, ~175× below TB-1's 1.40 ms floor (work log 2026-09-16-t26-timing). A canonical-store body-materialisation channel, distinct from T-17a (derived-index statistics) and T-22 (a per-row count term, #338) |
 | T-27 | A distributed OKF bundle holds knowledge this deployment has since withdrawn | I | High | Accepted residual, recorded ([ADR-0037](../adr/0037-okf-is-the-knowledge-layer-interchange.md) *What this does not close* item 1). Four controls, three of them operator-side — the bundle is Index-class, `theurian_bundle_digest` makes staleness detectable by regenerate-and-compare, and the shipped guidance is regenerate-never-edit — and **one that travels**: the manifest's mandatory fixed-text holder notice. Export-side surface recorded in the entry: no bundle file carries SEC-15's safety triple (unowned); a body's rendered sections are not authenticated against the front matter ([#814](https://github.com/theurian/theurian/issues/814)); containment is at or under the canonical export target, with ancestor links followed and a dangling one's chain created — bounded to name occupation — and the check-to-use component race left with [#577](https://github.com/theurian/theurian/issues/577). The concurrent-merge face is closed by the atomic publish, not accepted |
+| T-28 | A content update re-asserts an existing item's governance labels, so an accepted proposal lowers its sensitivity or readmits it | T/I | High | Closed in 0.5.1 at draft and `accept` — GHSA-v2qg-23fc-7fqp. Omitted labels inherit the item's own; a lower sensitivity and a retired item are refused at draft and by two `accept` floors comparing replayed state; `accept` never introduces or re-attributes a `permissiveMoves` row. The post-accept merge-order race is detected by `migrate validate`/`migrate apply`'s `permissiveMoves` and not prevented; ten residuals recorded in the entry |
 
 ## Explicitly out of scope
 

@@ -66,8 +66,9 @@ from theurian.cli.context import (
     resolve_context,
 )
 from theurian.cli.index_status_report import index_staleness
-from theurian.cli.migration_pipeline import apply_migration_set
+from theurian.cli.migration_pipeline import apply_migration_set, permissive_moves_in
 from theurian.cli.output import escape_terminal_controls
+from theurian.cli.permissive_move_report import permissive_move_rows
 from theurian.domain.errors import (
     AliasItemCollisionError,
     DuplicateContentFileError,
@@ -2290,6 +2291,16 @@ def migrate_validate(as_json: JsonOption = False) -> None:
     the set parses, validates, resolves its content files inside the project
     root, and has a valid application order.
 
+    It replays the whole set into a throwaway database for `permissiveMoves`,
+    a report and never a refusal: one row per replayed `upsertRevision` that
+    loosened an item's `status` or `sensitivity`, on an item its migration left
+    looser at its end than at its start. `undoes` names the migration that last
+    changed whether the item may surface (`status`) or its class (`sensitivity`)
+    before that migration; `kind` is `undoes` when that change tightened the
+    field, whatever operation made it, and `lowers` otherwise.
+    Neither `valid` nor the exit code depends on that replay; when it fails,
+    the report says why instead (`permissiveMovesUnavailable` under `--json`).
+
     Also calls :func:`refuse_unenforceable_scope` directly, on the same
     `MigrationSet` `migrate apply` would see -- `MigrationEngine.apply` calls
     the identical function internally. A document that names a tenant or ACL
@@ -2318,9 +2329,26 @@ def migrate_validate(as_json: JsonOption = False) -> None:
             "contentFileCount": len(context.loaded.content_checksums),
             "stateHash": str(context.state_hash),
             "applicationOrder": [str(m.migration_id) for m in context.loaded.migration_set],
+            **_permissive_move_fields(context, as_json=as_json),
         },
         as_json=as_json,
     )
+
+
+def _permissive_move_fields(context: CommandContext, *, as_json: bool) -> dict[str, object]:
+    """The whole set's permissive-move report, from a throwaway replay (GHSA-v2qg-23fc-7fqp)."""
+    # Measured on the advisory branch, 2026-10-02, against the same branch before the
+    # report existed: wall clock of `python -m theurian.cli.main migrate validate
+    # --json` over 1,000 single-item migrations, load average 5-10, median of 3
+    # interleaved runs: 7.71 s -> 8.39 s.
+    report = permissive_moves_in(
+        context.loaded, paths=context.paths, project_id=context.project_id, clock=context.clock
+    )
+    if report.moves is not None:
+        return {"permissiveMoves": permissive_move_rows(report.moves, as_json=as_json)}
+    if as_json:
+        return {"permissiveMoves": None, "permissiveMovesUnavailable": report.unavailable}
+    return {"permissiveMoves": f"report unavailable: {report.unavailable}"}
 
 
 #: The remedy for a residual fault reaching one of the two backstops inside
@@ -2499,6 +2527,14 @@ def migrate_apply(  # noqa: PLR0911, PLR0912 -- one early return (and now one br
 
     Idempotent: applying an unchanged set again reports zero applied and changes
     nothing (FR-K8).
+
+    Prints `permissiveMoves`, a report and never a refusal: one row per
+    `upsertRevision` this run applied that loosened an item's `status` or
+    `sensitivity`, on an item its migration left looser at its end than at its
+    start. `undoes` names the migration that last changed whether the item may
+    surface (`status`) or its class (`sensitivity`) before that migration; `kind`
+    is `undoes` when that change tightened the field, whatever operation made it,
+    and `lowers` otherwise. The exit code does not depend on it.
 
     **One critical section spans every write this command makes (issue #468,
     round two).** The first shape shipped here held `create_database` and
@@ -2806,6 +2842,7 @@ def migrate_apply(  # noqa: PLR0911, PLR0912 -- one early return (and now one br
             "operationsApplied": report.operations_applied,
             "changed": report.changed,
             "indexPurge": _purge_fields(purge),
+            "permissiveMoves": permissive_move_rows(report.permissive_moves, as_json=as_json),
         },
         as_json=as_json,
     )

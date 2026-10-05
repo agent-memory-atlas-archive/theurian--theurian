@@ -111,19 +111,19 @@
     },
     "namespace": {
       "type": ["string", "null"],
-      "description": "Namespace to record. Absent defaults to the item id's own."
+      "description": "Namespace to record. Absent keeps the namespace of an item that exists and the caller may see, and defaults to the item id's own for an id nothing has created, or one outside the caller's view."
     },
     "trustLevel": {
       "type": ["string", "null"],
-      "description": "How much scrutiny this content has had. Absent means \"not stated\" — never a stamped default, which would assert a judgement the caller did not make (#249). The closed set is `TrustLevel`; an unknown value is a handler refusal."
+      "description": "How much scrutiny this content has had. Absent keeps the trust level of an item that exists and the caller may see; for an id nothing has created, or one outside the caller's view, it means \"not stated\" — never a stamped default, which would assert a judgement the caller did not make (#249). The closed set is `TrustLevel`; an unknown value is a handler refusal."
     },
     "sensitivity": {
       "type": ["string", "null"],
-      "description": "Disclosure class. Absent means \"not stated\", never a stamped default. The closed set is `Sensitivity`; an unknown value is a handler refusal."
+      "description": "Disclosure class. Absent keeps the sensitivity of an item that exists and the caller may see; for an id nothing has created, or one outside the caller's view, it means \"not stated\", never a stamped default. For an item that exists and the caller may see, a call that names a lower class than its current one (public < internal < confidential < restricted) is refused. Otherwise the draft is written as named, and `theurian propose accept` refuses it if its replay would lower the item's class. Lowering is a hand-authored migration with `changeSensitivity`. The closed set is `Sensitivity`; an unknown value is a handler refusal."
     },
     "expectedRevision": {
       "type": ["string", "null"],
-      "description": "The current revision id of an existing item (ADR-0006 optimistic concurrency). Required for an update and refused on a first revision — the handler derives which from the caller's own view of the approved set (ADR-0032 decision 6)."
+      "description": "The current revision id of an existing item (ADR-0006 optimistic concurrency). Required when the item has a revision, refused when it has none (a new id, or an item created with no revision) — the handler derives which from the caller's own view of the approved set (ADR-0032 decision 6)."
     },
     "local": {
       "type": "boolean",

@@ -638,9 +638,9 @@ change from one written after it.
    the decode-before-gate bit #853's faces carry: `_item_from_row` decodes all
    three (`infrastructure/sqlite/store.py:1682`, `:1685`, `:1686`), and at each
    of those faces that reads an item row — `knowledge.get`,
-   `_relation_is_visible`, the write tools' `current_revision` and
-   `CanonicalVisibility._may_surface` — that decode runs before the caller's
-   gate. A caller that gates in SQL first is not one of them:
+   `_relation_is_visible`, the write tools' `current_item` (`current_revision`
+   at `f0e4d754`, renamed in 0.5.1) and `CanonicalVisibility._may_surface` —
+   that decode runs before the caller's gate. A caller that gates in SQL first is not one of them:
    `knowledge.search`'s `_scan` passes the statuses it has already resolved to
    `list_items_by_status`, and a `rejected` row carrying an unknown `trustLevel`
    member is filtered out there and never decoded (measured by calling
@@ -814,15 +814,22 @@ Still owed, with the issue or slice that will satisfy it:
    `list_relations` decode ahead of its gate (*Context*), and a known-type edge
    from a visible item to a withheld neighbour carrying an unknown member
    raises through `_relation_is_visible` → `get_item_exact_metadata` →
-   `_item_from_row` (`mcp/tools.py:1191`), measured in PR #852's round-two
+   `_item_from_row` (`mcp/tools.py:1190`), measured in PR #852's round-two
    security review and recorded on the tracker. The write tools'
-   `current_revision` (`mcp/tools.py:1942`) and `CanonicalVisibility.item`
+   `current_item` (`current_revision` at `f0e4d754`, renamed in 0.5.1;
+   `mcp/tools.py:1937`) and `CanonicalVisibility.item`
    (`application/visibility.py:372`) decode before their gates too, read from
    source. Its acceptance is a two-corpora test, a withheld row carrying an
    unknown member against an absent id with identical responses, and a
    visible-neighbour probe: a visible item whose edge points at such a withheld
    row answers as it does when the neighbour is absent. The serve-path engine
    check decision 6 names is part of it.
+
+   > **Corrected at the 0.5.1 cut.** This item cited `mcp/tools.py:1191` and
+   > `:1942`, the lines of those two reads at this record's merge, `e5f8f64f`.
+   > At its anchor, `f0e4d754`, they are `:1190` and `:1937`, which the item
+   > now gives. The write tools' closure was renamed from `current_revision` to
+   > `current_item` in 0.5.1, by GHSA-v2qg-23fc-7fqp.
 4. **The slice that first bumps `apiVersion`** — Phase C's edge operation, if
    [#275](https://github.com/theurian/theurian/issues/275)'s representation
    needs one: the multi-version read (decision 5) in the schema, the loader and

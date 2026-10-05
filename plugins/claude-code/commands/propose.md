@@ -79,13 +79,23 @@ cannot approve knowledge"** rule below, not the front-matter
      source takes `--authored-here` instead — a claim to make deliberately, not a
      way around a missing anchor. One or the other is required, because
      `theurian migrate apply` refuses a revision that has neither (INV-8).
-   - **Updating an item that already exists?** Pass `--expected-revision <id>`
-     with the item's current revision id. Without it, `theurian propose` refuses
-     the draft rather than emitting an update that validates and then loses a
-     concurrent change at `migrate apply`
+   - **Updating an item that already has a revision?** Pass
+     `--expected-revision <id>` with the item's current revision id. Without it,
+     `theurian propose` refuses the draft rather than emitting an update that
+     validates and then loses a concurrent change at `migrate apply`
      ([#210](https://github.com/theurian/theurian/issues/210)). Pass it only for
-     an item that exists: a first revision has nothing to replace, and the command
-     refuses it there too.
+     an item that has a revision: one that does not exist yet, or exists with no
+     revision, takes a first revision, which has nothing to replace, and the
+     command refuses the flag there too.
+   - **An item that exists keeps its labels.** Omitted, `--sensitivity` and
+     `--trust-level` take the item's own, whether it has a revision or not, and a
+     `--sensitivity` lower than the item's is refused: lowering one is a
+     hand-authored migration of its own, named in the refusal's `remedy`, and the
+     user's to write, not yours.
+   - **A retired item is not drafted for.** For an item that is deprecated,
+     superseded or rejected, `theurian propose` refuses the draft and writes
+     nothing: bringing one back is a hand-authored migration of its own, named
+     in the refusal's `remedy`, and the user's to write, not yours.
    - **Do not try to pin the digest or pick ids yourself.** The command computes
      `contentSha256` from the body you passed and mints fresh ULIDs for the
      proposal, the migration and the revision. Every revision must pin its body,
@@ -132,7 +142,31 @@ cannot approve knowledge"** rule below, not the front-matter
       pipeline `migrate apply` runs — the
       published schema, the whole-set guards, and a dry replay that reaches the
       invariants only applying can check, a revision's source anchor and a reused
-      revision id among them. **If any of that refuses, nothing is consumed**: the
+      revision id among them. And it refuses a proposal whose replay would lower
+      an item's sensitivity or bring a deprecated, superseded or rejected item
+      back; the `remedy` names the hand-authored migration that does either.
+      Once a migration bringing the item back or reclassifying it lands, the
+      update is drafted again, not accepted again: the old proposal's migration
+      replays before it, so `migrate validate` would report its revision, and `accept` refuses
+      a proposal whose own revision that report would name. Edit
+      `dependsOn: [<its id>]` into the new draft's migration file, since
+      `theurian propose` has no option for it: the new draft's id need not sort
+      after that migration's, and only `dependsOn` puts it after, so without it
+      the new draft can replay before that migration too. It also refuses one
+      that a landed migration replaying after it would undo, whether that adds
+      a row to the report or changes which migration a row already there says
+      it undoes. The fix there is a new migration that replays after the
+      landed one, routed by everything the refused proposal carries: a fresh
+      `theurian propose` when all of it is content,
+      `knowledge.generateMigrationDraft` when all of it is changes that tool
+      drafts, and otherwise, as for a reclassification or a readmission, a
+      migration authored by hand and applied with `theurian migrate apply`
+      after a human has reviewed it. A proposal no single tool drafts is
+      authored whole: the new migration carries every change the refused one
+      did, not only the ones neither tool drafts. The `remedy` names the
+      route, and the `dependsOn` the new migration needs, whatever the landed
+      one declares.
+      **If any of that refuses, nothing is consumed**: the
       proposal directory is left exactly as it was, so the change is corrected and
       accepted rather than re-drafted from nothing (ADR-0027).
 
@@ -146,7 +180,9 @@ cannot approve knowledge"** rule below, not the front-matter
       to `.theurian/knowledge/` and `.theurian/migrations/`.
 
       Read the exit code before you report success. **1** means this proposal
-      could not be used as it stands — correct it and accept it again. **4** means
+      could not be used as it stands — correct it and accept it again, or,
+      where the `remedy` says so, draft it again or author the migration it
+      names. **4** means
       the project's knowledge state refuses the move: either this migration is
       already in place, or `.theurian/migrations/` does not apply *with or without
       this proposal*. On a 4 that says "with or without this proposal", the
@@ -159,7 +195,8 @@ cannot approve knowledge"** rule below, not the front-matter
       ```
 
       This re-checks schema conformance and the whole-set guards over what
-      landed. It does not replay, so it is a weaker check than the acceptance
+      landed. Its verdict does not rest on a replay (it replays the set only for
+      its `permissiveMoves` report), so it is a weaker check than the acceptance
       that just ran, not a stronger one — the acceptance already proved the set
       applies ([#36](https://github.com/theurian/theurian/issues/36)). It reads
       `.theurian/migrations/` only, so it reports nothing about a proposal whose

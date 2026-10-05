@@ -47,6 +47,7 @@ from theurian.application.candidate_generation import (
     ResolveEvidencePath,
 )
 from theurian.application.draft_only_proposals import DraftOnlyProposals
+from theurian.application.item_labels import CurrentItem, ItemLabels
 from theurian.application.project_service import (
     ACTIVE_POINTER_REMEDY,
     FINDINGS_STORE_ID,
@@ -1916,7 +1917,7 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         the tenant boundary, the unregistered-project refusal that names only what
         is registered, the built-state and provenance checks (SEC-13, ADR-0004).
 
-        ``current_revision`` is **caller-scoped** (ADR-0032 decision 6): it reads
+        ``current_item`` is **caller-scoped** (ADR-0032 decision 6): it reads
         the same canonical store the read tools serve from and consults
         ``may_surface``/``may_disclose``, so an item this caller may not see --
         ``rejected``, or above the deployment's ceiling -- answers ``None``, and
@@ -1929,7 +1930,7 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         project_id = ProjectId(project_id_raw)
         context = RequestContext(project_id=project_id)
 
-        def current_revision(item_id: ItemId) -> RevisionId | None:
+        def current_item(item_id: ItemId) -> CurrentItem | None:
             with SqliteCanonicalStore(database) as store:
                 # `get_item_metadata`, not `get_item`: the gate below decides on
                 # `status`/`sensitivity`, both on the pointer row, so a *withheld*
@@ -1937,10 +1938,11 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
                 # the current revision and materialises its body, making the refusal's
                 # duration scale with that body's size -- the write-path face of the
                 # refusal-timing oracle (T-26). The metadata row carries
-                # `current_revision_id`, the only field this closure returns, so its
-                # `current_served_content_sha256=None` (no body hashed) is immaterial.
+                # `current_revision_id` and the three labels this closure returns,
+                # so its `current_served_content_sha256=None` (no body hashed) is
+                # immaterial.
                 item = store.get_item_metadata(context, item_id)
-            if item is None or item.current_revision_id is None:
+            if item is None:
                 return None
             # `include_unapproved=True`: a write author may legitimately update a
             # draft, so the broadest surfaceable view is the one that answers
@@ -1952,7 +1954,12 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
                 item.sensitivity, visible=grant.sensitivities
             ):
                 return None
-            return item.current_revision_id
+            # A `createItem` with no revision answers too, with no revision id: its
+            # labels are what a first revision would overwrite.
+            return CurrentItem(
+                item.current_revision_id,
+                ItemLabels(item.sensitivity, item.trust_level, item.namespace, item.status),
+            )
 
         service = ProposalService(
             paths=paths,
@@ -1960,7 +1967,7 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             clock=SystemClock(),
             ids=UlidGenerator(),
             validate=validate,
-            current_revision=current_revision,
+            current_item=current_item,
             landed_migration=_accept_is_unreachable,
             landed_migrations=_accept_is_unreachable,
             rehearse=_accept_is_unreachable,

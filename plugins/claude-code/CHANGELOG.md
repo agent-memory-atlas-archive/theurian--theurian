@@ -16,6 +16,51 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`theurian/v1`), and this plugin is exercised against that Core by the
   repository's own suite (`compatibility.yaml` is the one file that changes
   when Core ships a compatible release — its own recorded design).
+- **`/theurian:propose` describes what Core 0.5.1 refuses**, the fix for
+  GHSA-v2qg-23fc-7fqp, which Core's changelog records.
+  An item that exists keeps its labels: an omitted `--sensitivity` or
+  `--trust-level` takes the item's own, whether it has a revision or not, and a
+  lower `--sensitivity` is refused. A deprecated, superseded or rejected item is
+  not drafted for. Lowering a sensitivity and bringing an item back are each a
+  hand-authored migration, named in the refusal's `remedy`, and the command
+  tells the agent they are the user's to write, not its own.
+  `--expected-revision` is for an item that has a revision, so an item that
+  exists with no revision takes its first revision without it. For
+  `theurian propose accept`, the command adds the refusals of a proposal whose
+  replay would lower a sensitivity or bring a retired item back; of one whose
+  own revision `theurian migrate validate` would then report; and of one that a
+  landed migration replaying after it would undo, whether that adds a row to
+  the report or changes which migration a row already there says it undoes.
+  Once a reclassification or a readmission lands, the update is drafted again,
+  not accepted again, with `dependsOn: [<its id>]` edited into the new draft's
+  migration file: `theurian propose` has no option for it, and only `dependsOn`
+  places the new draft after that migration. For a landed migration's undo, the
+  fix is a new migration routed by everything the refused proposal carries: a
+  fresh `theurian propose` when all of it is content,
+  `knowledge.generateMigrationDraft` when all of it is changes that tool
+  drafts, and otherwise one migration carrying every change, authored by hand
+  and applied with `theurian migrate apply` after a human has reviewed it. The
+  `remedy` names the route and the `dependsOn` the new migration needs. Exit 1
+  now reads "correct it and accept it again, or, where the `remedy` says so,
+  draft it again or author the migration it names". The command also stops
+  saying `migrate validate` does not replay: its verdict does not rest on a
+  replay.
+- **`/theurian:migrate` shows the permissive-move report.** When
+  `permissiveMoves` is not empty after `theurian migrate validate` or
+  `theurian migrate apply`, the command has the agent show the user every row,
+  defines `undoes` and `kind` for it, and has it say that nothing was refused,
+  since the report changes no exit code. When `migrate validate` prints
+  `permissiveMovesUnavailable` instead, the agent shows that: the set did not
+  replay, so there is no report, and `migrate apply` runs the same replay.
+- **`/theurian:index` names the route out of a landed secret that keeps an
+  item's labels**: draft the new revision with
+  `theurian propose --expected-revision <current>`. A revision written by hand
+  must restate `sensitivity` and `trustLevel`, or the item falls back to the
+  defaults.
+
+  These three describe Core 0.5.1. The declared range,
+  `>= 0.1.0-dev.0, < 0.6.0`, still admits Core 0.5.0 and earlier, where those
+  refusals do not happen and `permissiveMoves` is absent.
 
 ### Added
 

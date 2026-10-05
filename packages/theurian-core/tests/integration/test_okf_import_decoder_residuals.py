@@ -38,12 +38,12 @@ from fakes.clock import FrozenClock
 from fakes.ids import SeededIdGenerator
 
 from theurian.application.draft_only_proposals import DraftOnlyProposals
+from theurian.application.item_labels import CurrentItem
 from theurian.application.okf_import import OkfImportRequest, OkfImportService
 from theurian.application.project_service import ProjectPaths, initialize_project
 from theurian.application.proposal_service import ProposalService
-from theurian.cli.migration_pipeline import rehearse_migration_set
-from theurian.domain.identifiers import AgentId, ItemId, MigrationId, ProjectId, RevisionId, TaskId
-from theurian.domain.migration import current_revision_in
+from theurian.cli.migration_pipeline import current_item_in, rehearse_migration_set
+from theurian.domain.identifiers import AgentId, ItemId, MigrationId, ProjectId, TaskId
 from theurian.domain.project import DEFAULT_KNOWLEDGE_DIRECTORY
 from theurian.domain.proposal import Evidence
 from theurian.infrastructure.filesystem.migration_loader import (
@@ -94,9 +94,11 @@ def paths(tmp_path: Path) -> ProjectPaths:
 
 
 def _service(paths: ProjectPaths) -> OkfImportService:
-    def current_revision(item_id: ItemId) -> RevisionId | None:
+    def current_item(item_id: ItemId) -> CurrentItem | None:
         loaded = load_migrations(paths.root, paths.migrations, SCHEMAS)
-        return current_revision_in(loaded.migration_set, item_id)
+        return current_item_in(
+            loaded, item_id, paths=paths, project_id=ProjectId("demo"), clock=FrozenClock()
+        )
 
     def landed_migration(migration_id: MigrationId) -> object:
         loaded = load_migrations(paths.root, paths.migrations, SCHEMAS)
@@ -112,7 +114,7 @@ def _service(paths: ProjectPaths) -> OkfImportService:
         clock=FrozenClock(),
         ids=SeededIdGenerator(),
         validate=lambda document: validate_migration_document(document, SCHEMAS),
-        current_revision=current_revision,
+        current_item=current_item,
         landed_migration=landed_migration,  # type: ignore[arg-type]
         landed_migrations=landed_migrations,  # type: ignore[arg-type]
         rehearse=lambda candidate: rehearse_migration_set(candidate, clock=FrozenClock()),

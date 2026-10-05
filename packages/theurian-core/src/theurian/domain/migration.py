@@ -489,8 +489,9 @@ def current_revision_in(migrations: Iterable[Migration], item_id: ItemId) -> Rev
 
     ``migrations`` must already be in application order (a :class:`MigrationSet`
     iterates in that order): the *last* upsert for the item is the current one.
-    Returns ``None`` when no migration ever revised the item -- it does not yet
-    exist, so a proposal that creates it is a first revision, not an update.
+    Returns ``None`` when no migration ever revised the item, so a proposal for
+    it is a first revision, not an update. The item may exist all the same, from
+    a ``createItem`` alone: :func:`item_named_in` answers that.
     """
     current: RevisionId | None = None
     for migration in migrations:
@@ -498,6 +499,20 @@ def current_revision_in(migrations: Iterable[Migration], item_id: ItemId) -> Rev
             if isinstance(operation, UpsertRevision) and operation.item_id == item_id:
                 current = operation.revision_id
     return current
+
+
+def item_named_in(migrations: Iterable[Migration], item_id: ItemId) -> bool:
+    """Whether any migration creates ``item_id``, with a ``createItem`` or a first revision.
+
+    An item can exist with no revision, so this is wider than
+    :func:`current_revision_in`; the other operations only act on an item that
+    already exists.
+    """
+    return any(
+        isinstance(operation, CreateItem | UpsertRevision) and operation.item_id == item_id
+        for migration in migrations
+        for operation in migration.operations
+    )
 
 
 @dataclass(frozen=True, slots=True)

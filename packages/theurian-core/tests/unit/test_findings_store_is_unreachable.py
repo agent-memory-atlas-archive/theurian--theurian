@@ -359,6 +359,13 @@ _APPLICATION_NON_SERVING_MODULES: frozenset[str] = frozenset(
         "index_builder.py",
         "index_secret_scan.py",
         "ingestion_service.py",
+        # The label-lowering vocabulary (the GHSA-v2qg fix): pure value types, a
+        # lookup callable type and the lowering predicate shared by the proposal
+        # draft/accept paths, the write tools' caller-scoped lookup and the
+        # migration pipeline. It imports only domain enums and `authorization`,
+        # names no store, and returns labels and remedy text, never finding or
+        # knowledge content.
+        "item_labels.py",
         "migration_alias_guards.py",
         "migration_body_guards.py",
         "migration_engine.py",
@@ -385,6 +392,10 @@ _APPLICATION_NON_SERVING_MODULES: frozenset[str] = frozenset(
         # and answers no caller with knowledge content -- its whole output is
         # a proposal directory, not a served response.
         "okf_import.py",
+        # The permissive-move report's tracker (GHSA-v2qg-23fc-7fqp): the engine
+        # feeds it item labels and migration ids and it returns rows of the same.
+        # It names no store and holds no knowledge or finding content.
+        "permissive_moves.py",
         "project_service.py",
         "proposal_service.py",
         # One review-ingestion run (ADR-0030 decisions 3 and 4): it fetches
@@ -436,6 +447,10 @@ _CLI_NON_SERVING_MODULES: frozenset[str] = frozenset(
         # output is a proposal directory a human later reviews.
         "okf_commands.py",
         "output.py",
+        # How `migrate validate` and `migrate apply` print the permissive-move report
+        # (GHSA-v2qg-23fc-7fqp): it turns the engine's rows into payload fields and
+        # names no store.
+        "permissive_move_report.py",
         "propose_commands.py",
         # `theurian review ingest` (ADR-0030): the composition root that lands
         # review *evidence* files. It is a write path -- but not the findings

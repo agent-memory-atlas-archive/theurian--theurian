@@ -14,6 +14,270 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 Nothing yet.
 
+## [0.5.1] - 2026-10-05
+
+### Security
+
+- **A content update drafted for an existing item re-asserted the item's
+  governance labels, so once accepted, merged and applied it could lower the
+  item's sensitivity or bring a retired item back into the served set**
+  (**HIGH.** The advisory id is
+  [GHSA-v2qg-23fc-7fqp](https://github.com/theurian/theurian/security/advisories/GHSA-v2qg-23fc-7fqp);
+  T-28 in [the threat model](../../docs/security/threat-model.md) carries the
+  residuals). Live over MCP in shipped Core 0.3.0 through 0.5.0:
+  `knowledge.proposeChange` shipped in 0.3.0 and
+  `review.generateKnowledgeCandidate` in 0.4.0. `theurian okf import` carried it
+  from 0.5.0, and `theurian propose`, which an agent reaches through the
+  plugin's `/theurian:propose`, has drafted updates the same way since
+  `core-v0.1.0.dev5`.
+
+  An `upsertRevision` gives its item the status, owner, kind, namespace, trust
+  level and sensitivity of the revision it lands, on every update and not only
+  the first revision. The drafter behind those four entry points wrote updates
+  as if the item had no labels. An omitted `sensitivity` or `trustLevel` was
+  left out of the migration, so the loader's `internal` or `unverified` replaced
+  the item's label and nothing in the diff said so. An omitted `namespace` was
+  written as the item id's own prefix. A named sensitivity below the item's was
+  admitted. Every drafted revision said `status: approved`, so a merged update
+  put a `deprecated`, `superseded` or `rejected` item back in the served set,
+  `rejected` included. `review.generateKnowledgeCandidate` named `internal` on
+  every update.
+
+  Over MCP, naming `sensitivity: public` on an `internal` item worked in the
+  default configuration, and the drafted migration showed it. The omitted-label
+  face needs the item in the caller's view, so for a `confidential` item a
+  serving ceiling raised to `confidential`. Readmission over MCP needed an item
+  a `createItem` made and nothing revised, because the write tools answer a
+  retired item that has a revision as an absent id. `theurian propose` reached
+  every face but the candidate tool's, for any item. Nothing changed until a
+  human accepted the proposal and merged it.
+
+  **Fixed in five parts.**
+
+  1. **An omitted label is the item's current one.** For an item the drafter's
+     lookup returns, an omitted `sensitivity`, `trustLevel` or `namespace` is
+     written into the migration as the item's current value, so the reviewer
+     reads the label the item will hold. On the CLI and in `okf import` the
+     lookup returns any item the landed migrations create; over MCP, one the
+     caller may see. That includes the first revision of an item a `createItem`
+     made. `review.generateKnowledgeCandidate` keeps such an item's sensitivity
+     instead of naming `internal`. A label the caller names is written as named,
+     with the one exception in the next item.
+  2. **A lower sensitivity is refused, at draft and at `accept`.**
+     `theurian propose` and `knowledge.proposeChange` refuse a draft that names
+     a sensitivity below the item's, and the remedy names the one
+     declassification path, a hand-authored `changeSensitivity` migration. Over
+     MCP the draft refusal runs only for an item the caller may see; any other
+     id is drafted as an id nothing created is. `theurian propose accept`
+     replays the landed migrations with the proposal and without it, and
+     refuses when an existing item ends at a lower class with it, whichever
+     operation moved the label. That covers a proposal drafted by an earlier
+     Core.
+  3. **A proposal does not readmit a retired item.** `theurian propose` and
+     `theurian okf import` refuse to draft for a `deprecated`, `superseded` or
+     `rejected` item, and `theurian propose` names the one readmission path, a
+     hand-authored `restoreItem` migration. Over MCP a retired item still
+     answers as an absent id. `accept` refuses a proposal after whose replay an
+     item the landed migrations leave retired is surfaceable, judged by
+     `may_surface(…, include_unapproved=True)`, the read gates' own predicate.
+     Moving a `draft` or `proposed` item to `approved` is not readmission and
+     still lands.
+  4. **What `accept` cannot see is reported.** The floors compare once, at
+     `accept`. A withdrawal merged after an update was accepted, with a
+     migration id that sorts before the update's, replays first and is undone
+     by the update's own `status` or `sensitivity`. The withdrawal can be an
+     in-place `upsertRevision` re-declaring a revision `rejected`, `superseded`
+     or `deprecated`, or at a higher class; a `deprecateItem`; or a
+     `changeSensitivity` that raises the class. `theurian migrate validate` and
+     `theurian migrate apply` now name each such update in `permissiveMoves`
+     (*Added*, below). Neither exit code moves: the race is detected, not
+     prevented.
+  5. **`accept` never introduces or re-attributes a report row.** It refuses a
+     proposal whose replay would add a row to that report, or would make a row
+     the history already holds name a different migration in `undoes`. The
+     cure is a new migration that replays after the landed one, and the remedy
+     routes it by every operation kind the refused proposal carries: a fresh
+     draft with `theurian propose` when every kind is `createItem` or
+     `upsertRevision`, with `knowledge.generateMigrationDraft` when every kind
+     is one that tool drafts, and otherwise one migration carrying all of them,
+     authored by hand and applied with `theurian migrate apply` once a human
+     has reviewed it. Every route names the `dependsOn` the new migration must
+     declare for the landed migrations it has to replay after, so a fresh draft
+     that declares none can replay before them and be refused again. Accepting
+     the refused proposal again replays it in the same place.
+
+  **After upgrading to 0.5.1, three things are yours to do:**
+
+  1. **Run `theurian migrate validate` before merging any migration that
+     withdraws or raises a label, and read its `permissiveMoves`.** First among
+     them, an in-place `upsertRevision` that re-declares a revision `rejected`,
+     `superseded` or `deprecated`, or at a higher class; then a `deprecateItem`,
+     and a `changeSensitivity` that raises the class. Theurian ships no CI
+     workflow, so nothing runs this on a pull request unless your own CI does.
+  2. **Read the `permissiveMoves` that `theurian migrate apply` prints.** A row
+     names an update that loosened an item's `status` or `sensitivity`; with
+     `kind: undoes` it undid an earlier withdrawal. The report changes no exit
+     code.
+  3. **Run `theurian migrate validate` once now.** `migrate apply` reports only
+     the migrations it applies, and for a migration set you have already
+     applied it reuses the state database an earlier Core built, so it reports
+     `[]`. `migrate validate` replays the whole set and reports every row your
+     history already holds.
+     [#853](https://github.com/theurian/theurian/issues/853) tracks checking
+     which build wrote a state database.
+
+  What 0.5.1 does not close is listed in T-28. The largest items: the floors
+  compare only at `accept`, so a proposal accepted by an earlier Core and merged
+  after the upgrade is not floored; a hand-authored migration runs no floor; and
+  a trust level, namespace, owner or kind a caller names lands as named, since
+  none of the four feeds a read gate.
+
+### Changed
+
+- **BREAKING — an omitted label on an existing item now means the item's
+  current value.** Old shape: `theurian propose` without `--sensitivity`,
+  `--trust-level` or `--namespace`, and `knowledge.proposeChange` without
+  `sensitivity`, `trustLevel` or `namespace`, wrote no `sensitivity` or
+  `trustLevel` into the migration, so the revision loaded as `internal` and
+  `unverified`, and wrote the item id's prefix as `namespace`.
+  `review.generateKnowledgeCandidate` named `internal`, and `theurian okf import`
+  left `sensitivity` out. New shape: for an item the drafter's lookup returns,
+  each omitted label is written as the item's current value; for any other id
+  nothing changes. The input schemas `knowledge-propose-change-input` and
+  `review-generate-knowledge-candidate-input` say so in their field
+  descriptions; their shapes do not change. `theurian propose`'s
+  governed-defaults warning in `nextSteps` now keys on what the drafted
+  migration names, so it no longer fires for an existing item.
+- **BREAKING — `theurian propose` and `knowledge.proposeChange` refuse a
+  sensitivity below the item's.** Old shape: drafted. New shape: refused with
+  "A content update cannot lower the sensitivity of the item it updates." and a
+  remedy naming a hand-authored `changeSensitivity` migration; `theurian
+  propose` exits 2 and writes nothing. Over MCP the refusal runs only for an
+  item the caller may see.
+- **BREAKING — `theurian propose` and `theurian okf import` refuse a retired
+  item.** Old shape: a draft for a `deprecated`, `superseded` or `rejected` item
+  was written with `status: approved`. New shape: `theurian propose` exits 2,
+  writes nothing, and says "This item has been withdrawn from the served set,
+  and a content update does not bring it back, so no update is written for it."
+  with a remedy naming a hand-authored `restoreItem` migration. That refusal
+  comes first when `--expected-revision` is missing or stale, because the
+  revision refusal's remedy is a step it would then block. `theurian okf
+  import` refuses that concept as `kind: draft`, with the literal
+  `the proposal service refused it: ProposalError`, which does not name
+  `restoreItem`, and still drafts the rest of the bundle at exit 0.
+- **BREAKING — `theurian propose accept` refuses four more kinds of proposal**
+  that it used to accept, each with exit 1 and nothing moved: one after whose
+  replay with the landed migrations an existing item holds a lower sensitivity;
+  one after whose replay an item the landed migrations leave retired is
+  surfaceable (one refusal names both causes when both hold: "Accepting this
+  proposal would lower the sensitivity of … and would readmit …"); one whose
+  acceptance would add a row to the `permissiveMoves` report or make a held row
+  name a different migration in `undoes`; and one whose landed migrations
+  replay only together with it, so there are no labels in place to compare
+  ("The landed migration set does not replay on its own, …"). A proposal
+  drafted by 0.5.0 or earlier meets all four. None of the first three is cured
+  by accepting the same proposal again: its migration id was minted at the
+  draft and replays before the migration the cure adds. The lowering and
+  readmission remedies name the hand-authored `changeSensitivity` or
+  `restoreItem`, and say that once it lands the update is drafted again with
+  `theurian propose`, with `dependsOn: [<its id>]` edited into the new draft's
+  migration file; the lowering remedy also names `theurian migrate apply` for a
+  served state that lags the landed migrations, and a fresh draft naming the
+  item's current sensitivity. The report-row remedy is routed by every
+  operation kind the refused proposal carries, as *Security* item 5 above
+  describes, and names `dependsOn: [<ids>]` for every landed migration its
+  error names.
+- **BREAKING — `theurian propose` refuses to draft for an existing item when
+  the landed migrations do not replay.** Old shape: drafted. New shape: exit 2,
+  carrying the engine's own words and pointing at `.theurian/migrations/`,
+  because the item's current labels are read from a replay. It also exits 2
+  when no scratch directory can be created for that replay, and then names
+  `TMPDIR`.
+- **BREAKING — wire text: an `expectedRevision` for an item with no current
+  revision is refused in new words.** Old: "`<id>` does not exist yet, so its
+  first revision cannot replace `<rev>`." with the remedy "Drop
+  --expected-revision to create the item, or correct --item-id." New: "`<id>`
+  has no current revision, so --expected-revision `<rev>` has nothing to
+  replace." with "Drop --expected-revision to draft its first revision, or
+  correct --item-id." It is one constant for an id nothing created, an id
+  outside the caller's view and an item a `createItem` made with no revision,
+  on the CLI and, folded into the message, over MCP.
+- **BREAKING — Python: `ProposalService` takes a `current_item` lookup.** Old
+  shape: a required `current_revision` (`CurrentRevisionLookup`, item id to
+  revision id). New shape: a required `current_item` (`CurrentItemLookup` in
+  `application/item_labels.py`, item id to the item's revision and labels), and
+  `current_revision` is an optional revision-only lookup checked first.
+  `MigrationSetRehearsal` returns a `Replay` where it returned `None`.
+- **`theurian migrate validate` replays the whole set once**, into a throwaway
+  database under the system temporary directory, for its `permissiveMoves`
+  report. Its `valid` verdict and its exit code do not depend on that replay.
+  It raised `migrate validate` from 7.71 s to 8.39 s at 1,000 single-item
+  migrations (median of three runs, measured on the advisory branch,
+  2026-10-02).
+- **Drafting for an existing item, and accepting, each cost one more replay.**
+  `theurian propose` and `theurian okf import` replay the landed migrations
+  into a throwaway store to read an existing item's labels: about 0.023 s on
+  this repository's own corpus and 0.286 s at 1,000 items. `theurian propose
+  accept` replays the landed migrations a second time, without the proposal,
+  for the floors. At 1,000 items that second replay was measured twice: a
+  median 7.22 s against 4.59 s with the floors patched out (3 runs each,
+  in-process, measured on the advisory branch, 2026-10-01), and 6.6 s against
+  4.2 s in the advisory's review (measured on the advisory branch,
+  2026-10-01).
+- `theurian propose accept`'s next steps stop saying `theurian migrate validate`
+  "does not replay": its verdict does not depend on a replay, and its
+  `permissiveMoves` report replays the set in a throwaway database.
+- `theurian index build`'s landed-secret remedy names the route that keeps an
+  item's labels: `theurian propose --expected-revision <current>`. A
+  hand-written `upsertRevision` must restate `sensitivity` and `trustLevel`, or
+  the item falls back to the defaults.
+
+### Added
+
+- **`permissiveMoves` on `theurian migrate validate` and `theurian migrate
+  apply`**
+  ([the migration format](../../docs/protocol/migrations.md#permissive-moves-are-reported-not-refused)).
+  A replayed `upsertRevision` is reported for `status` or `sensitivity` when it
+  loosened that field itself and its migration left the item looser at its end
+  than at its start. "Looser" is the `accept` floors' own test: for `status`,
+  `may_surface(…, include_unapproved=True)` going from false to true; for
+  `sensitivity`, a lower class. An item its migration creates is never
+  compared, a migration that withdraws and re-asserts an item in one diff is
+  not reported, and the sanctioned `deprecateItem`, `restoreItem` and
+  `changeSensitivity` are never reported. With `--json` each row is an object
+  with `migrationId`, `itemId`, `field`, `before` and `after` (the field at that
+  migration's start and end), `undoes` (the migration that last changed whether
+  the item may surface, or its class, before it) and `kind` — `undoes` when that
+  change tightened the field, `lowers` otherwise; `undoes` and `kind` are `null`
+  together when no writer was recorded. Without `--json` each row is one line.
+  `migrate validate` reports the whole set every time; `migrate apply` reports
+  what that run applied, and `[]` when nothing was pending. When `validate`'s
+  replay fails, `--json` gives `permissiveMoves: null` and
+  `permissiveMovesUnavailable` carrying the engine's own words, the text output
+  says `report unavailable:` with the same words, and the verdict and exit code
+  do not change. `theurian propose accept` does not print the report, and no
+  MCP tool returns it: it is the operator's own replay. A history that already
+  holds a reported update is reported on every replay, and nothing yet
+  acknowledges a row.
+
+### Dependencies
+
+- The `daemon` extra's exact pins move: `uvicorn` 0.53.0 → 0.54.0
+  ([#830](https://github.com/theurian/theurian/pull/830)) and `watchfiles`
+  1.2.0 → 1.3.0 ([#828](https://github.com/theurian/theurian/pull/828)). An
+  install of `theurian[daemon]` or `theurian[all]` gets them.
+- The build backend moves to `hatchling` 1.32.4
+  ([#829](https://github.com/theurian/theurian/pull/829)). Only a build from
+  the sdist runs it.
+- The repository's `uv.lock` moves `pyjwt` 2.13.0 → 2.15.0
+  ([#868](https://github.com/theurian/theurian/pull/868)), which `mcp`
+  requires, and `urllib3` 2.7.0 → 2.8.0
+  ([#867](https://github.com/theurian/theurian/pull/867)), which `requests`
+  requires for `opentelemetry-exporter-otlp-proto-http`. Neither is a dependency
+  Core declares, and the lock is not part of the published package: an install
+  from PyPI resolves both itself, so these reach a development checkout and CI,
+  not an installed Core.
+
 ## [0.5.0] - 2026-09-28
 
 ### Added
@@ -10707,7 +10971,8 @@ error is the one reading the release notes to decide whether to upgrade.
 - Migration `contentFile` paths are rejected at both schema and runtime level if
   they escape the project root.
 
-[Unreleased]: https://github.com/theurian/theurian/compare/core-v0.5.0...main
+[Unreleased]: https://github.com/theurian/theurian/compare/core-v0.5.1...main
+[0.5.1]: https://github.com/theurian/theurian/compare/core-v0.5.0...core-v0.5.1
 [0.5.0]: https://github.com/theurian/theurian/compare/core-v0.4.0...core-v0.5.0
 [0.4.0]: https://github.com/theurian/theurian/compare/core-v0.3.0...core-v0.4.0
 [0.3.0]: https://github.com/theurian/theurian/compare/core-v0.2.3...core-v0.3.0

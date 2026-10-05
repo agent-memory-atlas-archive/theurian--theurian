@@ -270,9 +270,12 @@ _NOT_CALLER_SETTABLE: Final = {
         "review-level trust, which is exactly what the human reviewer grants"
     ),
     "sensitivity": (
-        "fixed to `internal` by `KnowledgeCandidate.sensitivity`'s own default and never "
-        "set at generation, so it is never widened and there is no review-project default "
-        "to read; a wire field would let a caller widen a disclosure class from the write path"
+        "not caller input: it is `internal` for an id nothing has created or one outside the "
+        "caller's view, and otherwise the item's current sensitivity, so it is never widened, "
+        "and `propose accept` refuses any proposal that would lower an existing item and there "
+        "is no "
+        "review-project default to read; a wire field would let a caller widen a disclosure "
+        "class from the write path"
     ),
     "contentType": (
         "fixed to `text/markdown`: a generalisation is prose and there is no file whose "

@@ -536,7 +536,7 @@ def test_three_more_registered_gate_sites_decode_a_row_before_they_judge_it() ->
         if isinstance(node, ast.Assign) and ast.unparse(node.targets[0]) == "STATUS_GATE_CALL_SITES"
     ]
     neighbour = _function("mcp/tools.py", "_relation_is_visible")
-    write_tools = _function("mcp/tools.py", "current_revision")
+    write_tools = _function("mcp/tools.py", "current_item")
     [visibility] = [
         node
         for node in _trees()["application/visibility.py"].body
@@ -546,7 +546,7 @@ def test_three_more_registered_gate_sites_decode_a_row_before_they_judge_it() ->
 
     assert {
         ("mcp/tools.py", "_relation_is_visible"),
-        ("mcp/tools.py", "register._draft_only_proposals.current_revision"),
+        ("mcp/tools.py", "register._draft_only_proposals.current_item"),
         ("application/visibility.py", "CanonicalVisibility._may_surface"),
     } <= status_sites
     assert _first_call(neighbour, "get_item_exact_metadata") < _first_call(neighbour, "may_surface")

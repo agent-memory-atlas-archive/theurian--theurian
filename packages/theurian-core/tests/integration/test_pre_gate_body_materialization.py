@@ -726,7 +726,7 @@ def test_substring_scan_never_materialises_a_withheld_body(database: Path) -> No
 # -- Face 4: knowledge.proposeChange's expectedRevision lookup (the write path) --
 #
 # `knowledge.proposeChange`'s optimistic-concurrency check reads the caller-scoped
-# `current_revision` closure (`mcp/tools.py`, `_draft_only_proposals`) to answer
+# `current_item` closure (`mcp/tools.py`, `_draft_only_proposals`) to answer
 # "what revision is this item at". For a withheld item that lookup must return
 # `None` from the pointer row alone -- so the refusal is the absent-shaped one and
 # no body is read. Both faces are driven through the real handler over the wire, so
@@ -790,7 +790,7 @@ def _propose_change_refusal(
 def test_the_real_propose_change_handler_reads_no_body_before_a_withheld_refusal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The caller-scoped ``current_revision`` closure decides a withheld item's
+    """The caller-scoped ``current_item`` closure decides a withheld item's
     ``expectedRevision`` refusal from the pointer row alone, materialising zero
     bytes of its 8 MiB body (T-26, SEC-13, ADR-0032 decision 6).
 
@@ -804,7 +804,7 @@ def test_the_real_propose_change_handler_reads_no_body_before_a_withheld_refusal
 
     message = _propose_change_refusal(registry, WITHHELD_ID, STALE_EXPECTED_REVISION)
 
-    assert "does not exist yet" in message, "the withheld item is refused as absent"
+    assert "has no current revision" in message, "the withheld item is refused as absent"
     assert WITHHELD_REV.value not in message, "the refusal leaked no current revision id"
     assert counter.body_reads == 0, (
         "the real write path read no body before refusing a withheld item; reverting "
@@ -842,11 +842,11 @@ def test_the_real_propose_change_handler_names_the_current_revision_for_an_in_vi
     real current revision named -- the optimistic-concurrency remedy the #210
     unguarded-update class depends on for draft/proposed items (ADR-0032 decision 6).
 
-    This pins ``include_unapproved=True`` in the caller-scoped ``current_revision``
+    This pins ``include_unapproved=True`` in the caller-scoped ``current_item``
     lookup, which the approved-item control cannot: ``may_surface`` treats ``draft``
     (and ``proposed``) alone differently under the flag. Flip it to
     ``include_unapproved=False`` and the draft answers ``None`` -- the refusal
-    collapses to the absent-shaped "does not exist yet", naming no revision, so a
+    collapses to the absent-shaped "has no current revision", naming no revision, so a
     second create for this draft would slip past the "already exists" guard.
     """
     registry = _registered_project(tmp_path, withheld_status=KnowledgeStatus.DEPRECATED)

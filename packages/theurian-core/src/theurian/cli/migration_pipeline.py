@@ -26,26 +26,43 @@ staged on disk instead and the real loader reads it.
 
 from __future__ import annotations
 
+import sqlite3
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
+from theurian.application.item_labels import CurrentItem, ItemLabels, ReplayedItems
 from theurian.application.migration_engine import (
     ApplyReport,
     MigrationEngine,
     run_static_migration_guards,
 )
+from theurian.application.permissive_moves import PermissiveMove
 from theurian.application.project_service import ProjectPaths, resolve_state_hash
-from theurian.application.proposal_service import CandidateMigrationSet
+from theurian.application.proposal_service import (
+    CandidateMigrationSet,
+    ProposalError,
+    Replay,
+    _their_words,
+)
 from theurian.cli.context import schema_root
-from theurian.domain.errors import IrregularSourceFileError
-from theurian.domain.migration import MIGRATION_ENGINE_VERSION
+from theurian.domain.context import RequestContext
+from theurian.domain.errors import IrregularSourceFileError, TheurianError
+from theurian.domain.identifiers import ItemId, ProjectId
+from theurian.domain.migration import (
+    MIGRATION_ENGINE_VERSION,
+    current_revision_in,
+    item_named_in,
+)
 from theurian.domain.ports import Clock
 from theurian.domain.project import Project
 from theurian.infrastructure.filesystem.migration_loader import load_migrations
 from theurian.infrastructure.sqlite.connection import create_database, write_transaction
 from theurian.infrastructure.sqlite.schema import SCHEMA_VERSION
-from theurian.infrastructure.sqlite.store import SqliteWriter
+from theurian.infrastructure.sqlite.store import SqliteCanonicalStore, SqliteWriter
 from theurian.security.paths import read_source_file, resolve_within_root
 
 if TYPE_CHECKING:
@@ -158,14 +175,15 @@ def apply_migration_set(  # noqa: PLR0913 -- everything that differs between a r
     return report
 
 
-def rehearse_migration_set(candidate: CandidateMigrationSet, *, clock: Clock) -> None:
+def rehearse_migration_set(candidate: CandidateMigrationSet, *, clock: Clock) -> Replay:
     """Prove ``candidate`` survives the pipeline ``migrate apply`` runs, or raise.
 
     Writes nothing outside the temporary directory it creates and removes: the
     project ``candidate`` names is only ever *read* from. Returning normally is
-    the whole of the answer -- there is no report, because a caller that asked
-    "would this apply?" has nothing to do with the row counts of a store that is
-    about to be deleted.
+    the answer to "would this apply?"; what comes back is the items the replay
+    left, read through the store's own item reader before the store is deleted,
+    with that apply's permissive-move rows and the order it applied the set in,
+    for the one caller that reads them (``ProposalService.accept``).
 
     The stages are ADR-0027 decision 2's, in its order: the real loader over the
     copy (schema, document limits, ``apiVersion``, and the digest verification it
@@ -191,7 +209,7 @@ def rehearse_migration_set(candidate: CandidateMigrationSet, *, clock: Clock) ->
         state_hash = resolve_state_hash(loaded, SCHEMA_VERSION)
         database = paths.database_for(state_hash)
         create_database(database, str(state_hash), MIGRATION_ENGINE_VERSION)
-        apply_migration_set(
+        report = apply_migration_set(
             database=database,
             write_lock=paths.write_lock,
             project=_rehearsal_project(candidate, paths, clock),
@@ -199,6 +217,171 @@ def rehearse_migration_set(candidate: CandidateMigrationSet, *, clock: Clock) ->
             clock=clock,
             database_created=True,
         )
+        return Replay(
+            _read_items(database, candidate.project_id),
+            tuple(report.permissive_moves),
+            tuple(report.applied),
+        )
+
+
+def current_item_in(
+    loaded: LoadedMigrations,
+    item_id: ItemId,
+    *,
+    paths: ProjectPaths,
+    project_id: ProjectId,
+    clock: Clock,
+) -> CurrentItem | None:
+    """The item an update of ``item_id`` would replace, as the engine leaves it.
+
+    The revision is :func:`current_revision_in`, the answer the drafter has always
+    used. The labels are what :func:`apply_migration_set` -- the pipeline ``migrate
+    apply`` runs -- leaves in a throwaway store, read back through the store's own
+    item reader: a second fold of ``KnowledgeItem.with_revision`` here could
+    disagree with the engine about what a later migration did to a label (ADR-0027
+    decision 2). An item no migration creates answers ``None`` without a replay,
+    which is one first-revision case; the other, an item created and never
+    revised, answers its labels with ``revision_id=None``.
+
+    Raises:
+        ProposalError: If the set does not replay, so no label can be read. The
+            message carries the engine's own words and the remedy points at
+            ``.theurian/migrations/``: ``migrate validate``'s verdict does not
+            rest on a replay, so it reports valid on exactly such a set. Also if
+            the replay's scratch directory cannot be created, with a remedy that
+            points at the temporary directory instead.
+    """
+    if not item_named_in(loaded.migration_set, item_id):
+        return None
+    revision = current_revision_in(loaded.migration_set, item_id)
+    try:
+        scratch = tempfile.TemporaryDirectory(prefix="theurian-labels-")
+    except OSError as exc:
+        raise ProposalError(
+            f"{item_id.value} exists, but no scratch directory could be created to replay "
+            f"its current labels: {exc.strerror or type(exc).__name__}",
+            remedy="Nothing has been written. Free space in the system temporary directory, "
+            "or set TMPDIR to a writable directory with room, then run this command again.",
+        ) from exc
+    try:
+        with _scratch_database(
+            loaded, scratch, paths=paths, project_id=project_id, clock=clock
+        ) as (database, write_lock, project):
+            apply_migration_set(
+                database=database,
+                write_lock=write_lock,
+                project=project,
+                loaded=loaded,
+                clock=clock,
+                database_created=True,
+            )
+            items = _read_items(database, project_id)
+    except (TheurianError, OSError) as exc:
+        raise ProposalError(
+            f"{item_id.value} exists, but the approved migration set does not replay, so "
+            f"its current labels cannot be read: {_their_words(exc)}",
+            remedy="Nothing has been written. The fault is in .theurian/migrations/ -- read "
+            "what the message names there and correct it, then draft again. "
+            "`theurian migrate apply` runs the same replay.",
+        ) from exc
+    labels = items.get(item_id)
+    if labels is None:
+        raise ProposalError(
+            f"{item_id.value} is created in the approved migration set but the replay "
+            "holds no such item.",
+            remedy="Nothing has been written. Run `theurian migrate apply`, which replays the "
+            "same set and reports what stops it; if it applies cleanly, the replay reader is at "
+            "fault and this is a Theurian defect to report.",
+        )
+    return CurrentItem(revision, labels)
+
+
+@dataclass(frozen=True, slots=True)
+class MoveReport:
+    """``migrate validate``'s permissive-move report: its rows, or why its replay failed."""
+
+    moves: tuple[PermissiveMove, ...] | None
+    unavailable: str | None
+
+    def __post_init__(self) -> None:
+        if (self.moves is None) == (self.unavailable is None):
+            raise ValueError("a report carries either its rows or why it has none")
+
+
+def permissive_moves_in(
+    loaded: LoadedMigrations, *, paths: ProjectPaths, project_id: ProjectId, clock: Clock
+) -> MoveReport:
+    """Replay ``loaded`` into a throwaway database for the moves the whole set makes.
+
+    ``migrate validate``'s verdict does not rest on this replay, so a Theurian, OS
+    or SQLite error from it becomes :attr:`MoveReport.unavailable` rather than
+    propagating: its own words, bounded and redacted as a refusal quotes them.
+    """
+    try:
+        with _scratch_database(
+            loaded,
+            tempfile.TemporaryDirectory(prefix="theurian-report-"),
+            paths=paths,
+            project_id=project_id,
+            clock=clock,
+        ) as (database, write_lock, project):
+            report = apply_migration_set(
+                database=database,
+                write_lock=write_lock,
+                project=project,
+                loaded=loaded,
+                clock=clock,
+                database_created=True,
+            )
+    except (TheurianError, OSError, sqlite3.Error) as exc:
+        return MoveReport(None, _their_words(exc))
+    return MoveReport(tuple(report.permissive_moves), None)
+
+
+@contextmanager
+def _scratch_database(
+    loaded: LoadedMigrations,
+    scratch: tempfile.TemporaryDirectory[str],
+    *,
+    paths: ProjectPaths,
+    project_id: ProjectId,
+    clock: Clock,
+) -> Iterator[tuple[Path, Path, Project]]:
+    """A fresh, empty state database for ``loaded`` in ``scratch``, its lock and its project.
+
+    ``scratch`` is removed on exit. The caller creates it, so it decides what a
+    failure to create one is reported as.
+
+    The caller applies through :func:`apply_migration_set` itself (ADR-0027 decision
+    2): ``test_the_accept_replay_and_migrate_apply_reach_one_apply_function`` reads
+    that name in ``current_item_in``'s own code.
+    """
+    with scratch as directory:
+        scratch_path = Path(directory)
+        state_hash = resolve_state_hash(loaded, SCHEMA_VERSION)
+        project = Project(
+            project_id=project_id,
+            root_path=str(scratch_path.resolve()),
+            repository_url=None,
+            default_branch=_REHEARSAL_BRANCH,
+            knowledge_directory=PurePosixPath(
+                paths.knowledge_dir.relative_to(paths.root).as_posix()
+            ),
+            registered_at=clock.now(),
+        )
+        database = scratch_path / "replay.sqlite3"
+        create_database(database, str(state_hash), MIGRATION_ENGINE_VERSION)
+        yield database, scratch_path / "replay.lock", project
+
+
+def _read_items(database: Path, project_id: ProjectId) -> ReplayedItems:
+    """Every item ``database`` holds, read through the store's own item reader."""
+    with SqliteCanonicalStore(database) as store:
+        items = store.list_items(RequestContext(project_id=project_id))
+    return {
+        item.item_id: ItemLabels(item.sensitivity, item.trust_level, item.namespace, item.status)
+        for item in items
+    }
 
 
 def _materialize(candidate: CandidateMigrationSet, target: Path) -> Path:

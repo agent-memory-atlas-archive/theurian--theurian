@@ -83,13 +83,36 @@ from typing import Final, NoReturn
 
 import yaml
 
+from theurian.application.item_labels import (
+    ACCEPT_LOWERING_REMEDY,
+    ACCEPT_READMISSION_REMEDY,
+    DECLASSIFY_REMEDY,
+    DRAFT_AGAIN_CLAUSE,
+    READMIT_REMEDY,
+    CurrentItemLookup,
+    CurrentRevisionLookup,
+    ItemLabels,
+    ReplayedItems,
+    describe_lowering,
+    describe_readmission,
+    is_lowering,
+    lowered_sensitivities,
+    readmitted_items,
+)
+from theurian.application.permissive_moves import PermissiveMove, introduced_moves
 from theurian.application.project_service import (
     GitignoreIsASymbolicLinkError,
     ProjectError,
     ProjectPaths,
     ensure_gitignore,
 )
-from theurian.domain.enums import KnowledgeKind, KnowledgeStatus, Sensitivity, TrustLevel
+from theurian.domain.enums import (
+    KnowledgeKind,
+    KnowledgeStatus,
+    Sensitivity,
+    TrustLevel,
+    may_surface,
+)
 from theurian.domain.errors import (
     InputTooLargeError,
     IrregularSourceFileError,
@@ -106,9 +129,12 @@ from theurian.domain.knowledge import (
 )
 from theurian.domain.migration import (
     MIGRATION_API_VERSION,
+    ChangeSensitivity,
     CreateItem,
+    DeprecateItem,
     Migration,
     OperationKind,
+    RestoreItem,
     UpsertRevision,
 )
 from theurian.domain.ports import Clock, IdGenerator
@@ -420,20 +446,13 @@ _PERMISSION_ERRNOS: Final = frozenset({errno.EACCES, errno.EPERM})
 #: ``schemas/`` is an adapter's job (ADR-0003).
 MigrationDocumentValidator = Callable[[Mapping[str, object]], None]
 
-#: Returns an item's current revision in approved canonical state, or ``None`` if
-#: it does not exist. Injected so the generator can require ``--expected-revision``
-#: on a known item without opening the state database: the CLI derives it from
-#: the loaded migration set (:func:`current_revision_in`), and Milestone 7's MCP
-#: tools supply their own view of the same state.
-CurrentRevisionLookup = Callable[[ItemId], RevisionId | None]
-
 #: Returns the migration filed under an id in the project's approved set, or
 #: ``None`` if none is. Injected -- ``MigrationSet.get`` from the *same*
 #: ``MigrationSet`` ``resolve_context`` already loaded -- so the accept path reads
 #: exactly the set ``migrate validate``/``apply`` read (keyed by inner id in
 #: ``MigrationSet._by_id``) rather than re-detecting landed migrations from the
 #: filesystem. That the loader is not imported here is ADR-0003, the same reason
-#: the schema check and the current-revision lookup arrive this way.
+#: the schema check and the current-item lookup arrive this way.
 LandedMigrationLookup = Callable[[MigrationId], Migration | None]
 
 #: Every migration in the project's approved set. The same ``MigrationSet``
@@ -496,15 +515,29 @@ class CandidateMigrationSet:
     incoming: tuple[tuple[str, bytes], ...]
 
 
+@dataclass(frozen=True, slots=True)
+class Replay:
+    """What one rehearsal's replay left: its items, its permissive-move rows, and its order."""
+
+    items: ReplayedItems
+    moves: tuple[PermissiveMove, ...]
+    #: The migration ids in the order the replay applied them.
+    order: tuple[MigrationId, ...]
+
+
 #: Proves a :class:`CandidateMigrationSet` survives the pipeline ``migrate
 #: apply`` runs, raising if it does not, and writing nothing outside a throwaway
-#: target. Injected, and deliberately **not** a second implementation of that
-#: pipeline: the composition root wires the very function ``migrate apply``
-#: calls (``cli/migration_pipeline.py``), which is what makes "``accept`` and
+#: target. It returns what that replay left, so ``accept`` can compare the labels
+#: the union would leave with the ones the landed set holds, and refuse a
+#: proposal whose accept would add or re-attribute a row of the union's
+#: permissive-move report.
+#: Injected, and deliberately **not** a second implementation of that pipeline:
+#: the composition root wires the very function ``migrate apply`` calls
+#: (``cli/migration_pipeline.py``), which is what makes "``accept`` and
 #: ``migrate apply`` cannot disagree about whether a set is usable" structural
 #: rather than a property two pieces of code happen to share today (ADR-0027
 #: decision 2's hard condition).
-MigrationSetRehearsal = Callable[[CandidateMigrationSet], None]
+MigrationSetRehearsal = Callable[[CandidateMigrationSet], Replay]
 
 
 class ProposalError(TheurianError):
@@ -596,14 +629,26 @@ class ProposalRequest:
     source_anchors: tuple[SourceAnchor, ...] = ()
     labels: tuple[str, ...] = ()
     scope_paths: tuple[str, ...] = ()
-    #: Absent means "not stated": the field is left out of the migration and the
-    #: loader applies the schema default. A value is never invented here, because
-    #: `unverified`/`internal` written into every draft would assert a judgement
-    #: the caller did not make (#249).
+    #: Absent for an item ``draft``'s lookup finds -- an update, or the first
+    #: revision of an item created with no revision -- means the item's current
+    #: label, which ``draft`` writes in for each of these three
+    #: (GHSA-v2qg-23fc-7fqp). Absent for an item it does not find means "not
+    #: stated": ``trust_level`` and ``sensitivity`` are left out of the migration
+    #: and the loader applies the schema default. A value is never invented there,
+    #: because `unverified`/`internal` written into every draft would assert a
+    #: judgement the caller did not make (#249).
     trust_level: TrustLevel | None = None
     sensitivity: Sensitivity | None = None
     namespace: str | None = None
     expected_revision: RevisionId | None = None
+    #: ``sensitivity`` is a type default the caller did not choose, so an item
+    #: ``draft``'s lookup returns keeps its own label instead of being refused as
+    #: lowered. An item it does not return -- over MCP, one outside the caller's
+    #: view -- gets the default, as an id nothing created does, and ``accept``
+    #: refuses that if it lowers the item. A candidate carries ``internal`` whether
+    #: or not the item exists, and an item with a ``createItem`` and no revision
+    #: cannot be told apart by ``expected_revision``.
+    sensitivity_is_default: bool = False
 
     def __post_init__(self) -> None:
         # ADR-0013 point 5, on the generation path itself rather than only on
@@ -666,6 +711,10 @@ class DraftedProposal:
     #: Where ``accept`` will put the body. Reported so a caller can say what the
     #: change would touch without reading the migration back.
     body_destination: Path
+    #: The governed labels the staged revision names, after inheritance: ``None``
+    #: means the migration omits the key and the loader's default applies.
+    trust_level: TrustLevel | None = None
+    sensitivity: Sensitivity | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -817,17 +866,24 @@ class ProposalService:
         clock: Clock,
         ids: IdGenerator,
         validate: MigrationDocumentValidator,
-        current_revision: CurrentRevisionLookup,
+        current_item: CurrentItemLookup,
         landed_migration: LandedMigrationLookup,
         landed_migrations: LandedMigrations,
         rehearse: MigrationSetRehearsal,
+        # Optional, for a root whose `current_item` replays the landed set (the CLI
+        # and the OKF import): `draft` decides a missing or stale `expectedRevision`
+        # from this before calling `current_item`, and on that refusal calls it only
+        # to refuse a retired item first. The MCP root's lookup is a store read and
+        # passes none.
+        current_revision: CurrentRevisionLookup | None = None,
     ) -> None:
+        self._current_revision = current_revision
         self._paths = paths
         self._project_id = project_id
         self._clock = clock
         self._ids = ids
         self._validate = validate
-        self._current_revision = current_revision
+        self._current_item = current_item
         self._landed_migration = landed_migration
         self._landed_migrations = landed_migrations
         self._rehearse = rehearse
@@ -869,19 +925,50 @@ class ProposalService:
         An update states which revision it replaces, or it is refused here --
         at the point the author can still act on it, rather than at ``accept``
         with the work already done (#210). The
-        generator does not have to be told the item already exists: it derives
-        the item's current revision from the approved migration set (which is the
-        canonical state), so ``--expected-revision`` is required exactly when the
-        item is real and forbidden when it is not.
+        generator does not have to be told the item already exists: the injected
+        :data:`CurrentItemLookup` returns its current revision, so
+        ``--expected-revision`` is required exactly when the item has one and
+        forbidden when it has none, as an item created and never revised has none.
+        The CLI's lookup replays the approved migration set (the canonical
+        state); the MCP tools' lookup reads the canonical store, scoped to what
+        the caller may see (ADR-0032 decision 6).
+
+        The same answer carries the item's labels, for every item it returns,
+        revised or not. A draft for one inherits each label it leaves out, so the
+        loader's defaults do not re-label the item, and may not name a
+        sensitivity below the item's own (GHSA-v2qg-23fc-7fqp). A sensitivity the
+        request marks as a default (``sensitivity_is_default``) counts as left
+        out.
 
         Raises:
             ProposalError: If the request cannot be packaged, if an update omits
-                or misplaces its ``expectedRevision``, if the built migration does
-                not satisfy the published schema, or if a ``--local`` draft cannot
-                make ``.theurian/proposals-local/`` git-ignored. No proposal
-                directory is written in any case.
+                or misplaces its ``expectedRevision``, if a draft for an item the
+                injected lookup returns names a lower sensitivity than the item's
+                or the item is retired, if the built migration does not satisfy the published
+                schema, or if a
+                ``--local`` draft cannot make ``.theurian/proposals-local/``
+                git-ignored. No proposal directory is written in any case.
         """
-        self._check_expected_revision(request)
+        if self._current_revision is not None:
+            # Before `current_item`, which may replay the whole landed set.
+            try:
+                self._check_expected_revision(request, self._current_revision(request.item_id))
+            except ProposalError:
+                # Its remedy ("Pass --expected-revision") is a step the retired
+                # refusal blocks, so a retired item is told that first. The replay
+                # is paid on this refusal path only.
+                held = self._current_item(request.item_id)
+                if held is not None:
+                    _refuse_a_retired_item(held.labels)
+                raise
+        current = self._current_item(request.item_id)
+        self._check_expected_revision(request, None if current is None else current.revision_id)
+        if current is not None:
+            _refuse_a_retired_item(current.labels)
+            if request.sensitivity_is_default:
+                request = replace(request, sensitivity=None)
+            _refuse_a_lower_sensitivity(request, current.labels)
+            request = _inheriting(request, current.labels)
         proposal_id = ProposalId(self._ids.new_ulid().value)
         migration_id = MigrationId(self._ids.new_ulid().value)
         revision_id = RevisionId(self._ids.new_ulid().value)
@@ -950,6 +1037,8 @@ class ProposalService:
             content_file=content_file.as_posix(),
             content_sha256=digest,
             body_destination=self._paths.knowledge / relative_body,
+            trust_level=request.trust_level,
+            sensitivity=request.sensitivity,
         )
 
     def draft_from_document(
@@ -1109,27 +1198,34 @@ class ProposalService:
                 "proposal will then show up in git status.",
             ) from exc
 
-    def _check_expected_revision(self, request: ProposalRequest) -> None:
+    def _check_expected_revision(
+        self, request: ProposalRequest, current: RevisionId | None
+    ) -> None:
         """Refuse an update with no guard, and a first revision with a stale one.
 
         ``expectedRevision`` is optimistic concurrency (ADR-0006): present, it
         must equal the item's current revision; absent, the revision is the
-        item's first. Both are checkable at generation from the approved set,
-        and checking here is what stops #210's unguarded update -- a second
-        proposal for an existing item with no ``--expected-revision`` -- from
-        being written at all. ``accept`` would refuse it on the replay
-        (ADR-0027 decision 2) and consume nothing, so the cost of dropping this
-        check would be a wasted draft rather than a broken set; refusing at
-        generation is still where the author can act on it soonest.
+        item's first. Both are checkable at generation for an item the lookup
+        returns, and for such an item checking here is what stops #210's
+        unguarded update -- a second proposal for an existing item with no
+        ``--expected-revision`` -- from being written at all. Over MCP the
+        lookup does not return an item outside the caller's view, so an
+        unguarded update of one is written as a first revision for an id nothing
+        created would be (ADR-0032 decision 6), and ``accept`` refuses it on the
+        replay (ADR-0027 decision 2) and consumes nothing
+        (``test_update_label_inheritance.py::test_accept_refuses_a_candidate_for_a_deprecated_item_with_a_revision_at_the_replay``).
+        Dropping this check would cost the same, a wasted draft rather than a
+        broken set; refusing at generation is still where the author can act on
+        it soonest.
         """
-        current = self._current_revision(request.item_id)
         expected = request.expected_revision
         if current is None:
             if expected is not None:
                 raise ProposalError(
-                    f"{request.item_id.value} does not exist yet, so its first revision "
-                    f"cannot replace {expected.value}.",
-                    remedy="Drop --expected-revision to create the item, or correct --item-id.",
+                    f"{request.item_id.value} has no current revision, so "
+                    f"--expected-revision {expected.value} has nothing to replace.",
+                    remedy="Drop --expected-revision to draft its first revision, "
+                    "or correct --item-id.",
                 )
             return
         if expected is None:
@@ -1345,8 +1441,12 @@ class ProposalService:
         # landed migration and body, so its faults are not this proposal's and
         # must not be reported as "the proposal could not be examined". It
         # translates its own (CP-2, the fourth site).
-        self._refuse_unless_the_union_applies(
+        candidate, union = self._refuse_unless_the_union_applies(
             location, migration_file, migration_bytes, document, moves
+        )
+        held_moves = self._refuse_an_effective_lowering(candidate, union.items)
+        _refuse_a_reported_upsert(
+            location, document, held_moves, union, tuple(self._landed_migrations())
         )
 
         accepted = self._commit(proposal_id, moves, migration_file, migration_bytes, destination)
@@ -1766,7 +1866,7 @@ class ProposalService:
         migration_bytes: bytes,
         document: Mapping[str, object],
         moves: tuple[_BodyMove, ...],
-    ) -> None:
+    ) -> tuple[CandidateMigrationSet, Replay]:
         """Refuse unless the landed set *with this proposal in it* still applies.
 
         The four stages ADR-0027 decision 2 names, in its order:
@@ -1801,6 +1901,11 @@ class ProposalService:
         Nothing is consumed on any path through this method: it reads the
         project and writes only inside the rehearsal's own throwaway target.
 
+        Returns:
+            The set it replayed and what that replay left: the items
+            :meth:`_refuse_an_effective_lowering` compares with the landed set's,
+            and the rows and order :func:`_refuse_a_reported_upsert` reads.
+
         Raises:
             ProposalError: If any stage refuses. The remedy separates the two
                 fault directions -- this proposal's own migration, or a landed
@@ -1825,7 +1930,7 @@ class ProposalService:
 
         candidate = self._candidate(landed, migration_file, migration_bytes, moves)
         try:
-            self._rehearse(candidate)
+            return candidate, self._rehearse(candidate)
         except SchemaUnreadableError:
             # The installation's schema, not this project's content: it says
             # "reinstall theurian", and re-labelling it as a fault in the
@@ -1833,6 +1938,63 @@ class ProposalService:
             raise
         except (TheurianError, OSError) as exc:
             raise self._union_refusal(location, migration_file, landed, exc) from exc
+
+    def _refuse_an_effective_lowering(
+        self, candidate: CandidateMigrationSet, union: ReplayedItems
+    ) -> tuple[PermissiveMove, ...]:
+        """Refuse a proposal after whose replay an existing item is less sensitive or readmitted.
+
+        The draft-time refusal only covers a draft written by a build that has it.
+        ``accept`` lands whatever the proposal directory says, so two kinds reach
+        here past it: a draft written before inheritance existed, whose
+        ``upsertRevision`` omits ``sensitivity`` and loads as ``internal``; and a
+        draft that named the item's label before a hand-authored
+        ``changeSensitivity`` raised it, where migration-id order lets the draft
+        replay last. Both are caught by comparing what the engine leaves for each
+        item -- the landed set alone against the union -- never the keys the
+        document wrote (GHSA-v2qg-23fc-7fqp). The comparison runs on the operator's
+        own unscoped view, so the message names the item and both labels.
+
+        The status floor reads the same two replays: an item the landed set holds
+        as deprecated, superseded or rejected must not end surfaceable. The floor has
+        to compare the status the replays leave because ``upsertRevision`` adopts
+        ``metadata.status`` and the drafter always writes ``approved``. Readmission is
+        a hand-authored ``restoreItem`` migration.
+
+        An empty landed set holds no item to lower and is not replayed.
+
+        Returns:
+            The landed-alone replay's permissive-move rows, the baseline
+            :func:`_refuse_a_reported_upsert` compares the union's with.
+        """
+        if not candidate.landed:
+            return ()
+        # A second replay, this site's own cost: `propose accept` at 1,000 items took a
+        # median 7.22 s with this floor against 4.59 s with it patched out (3 runs each,
+        # in-process, measured on the advisory branch, 2026-10-01).
+        try:
+            held_replay = self._rehearse(replace(candidate, incoming=()))
+        except SchemaUnreadableError:
+            raise
+        except (TheurianError, OSError) as exc:
+            # Fail closed: without the landed set's own labels there is nothing to
+            # compare. Not `_landed_set_refusal`, which says the set is broken with
+            # or without this proposal -- the union just replayed.
+            raise ProposalError(
+                "The landed migration set does not replay on its own, so the labels this "
+                "proposal would leave cannot be compared with the ones in place: "
+                f"{_their_words(exc)}",
+                remedy=(
+                    "Nothing has moved. Make .theurian/migrations/ replay on its own first -- "
+                    "read what the message names there and correct it; `theurian migrate "
+                    "apply` runs the same replay -- then accept this proposal again."
+                ),
+            ) from exc
+        held = held_replay.items
+        refusal = _floor_refusal(lowered_sensitivities(held, union), readmitted_items(held, union))
+        if refusal is not None:
+            raise refusal
+        return held_replay.moves
 
     def _refuse_a_document_the_schema_rejects(
         self, migration_file: Path, document: Mapping[str, object]
@@ -1967,7 +2129,7 @@ class ProposalService:
         rehearsal of the landed set alone, and it costs nothing on the path that
         matters: it runs only when the acceptance is already being refused.
         """
-        landed_error = self._landed_set_alone_fails(landed)
+        landed_error, held = self._landed_set_alone(landed)
         if landed_error is not None:
             return self._landed_set_refusal(landed_error)
         message = (
@@ -1979,6 +2141,15 @@ class ProposalService:
             # free when it was drafted and is not free now. Re-drafting is the
             # honest cure *here* and nowhere else on this path -- nothing of this
             # proposal was consumed, so a second draft duplicates nothing (#89).
+            # Not for an item the landed set alone leaves retired: a draft for it is
+            # refused and so is an expectedRevision edit, so only readmission works.
+            # Asked of `_refuse_a_retired_item`, so the status gate keeps one reader here.
+            held_item = held.get(error.item_id)
+            if held_item is not None:
+                try:
+                    _refuse_a_retired_item(held_item)
+                except ProposalError:
+                    return ProposalError(message, remedy=ACCEPT_READMISSION_REMEDY)
             return ProposalError(
                 message,
                 remedy=(
@@ -2026,8 +2197,12 @@ class ProposalService:
             ),
         )
 
-    def _landed_set_alone_fails(self, landed: tuple[str, ...]) -> BaseException | None:
-        """The fault the landed set carries on its own, or ``None`` if it carries none.
+    def _landed_set_alone(
+        self, landed: tuple[str, ...]
+    ) -> tuple[BaseException | None, ReplayedItems]:
+        """The fault the landed set carries on its own, or ``None``, with what it replays to.
+
+        The items are empty when it faults or is empty.
 
         The same rehearsal, over the same files, with the incoming proposal left
         out -- so the two answers cannot differ for any reason except the
@@ -2036,9 +2211,9 @@ class ProposalService:
         foregone answer.
         """
         if not landed:
-            return None
+            return None, {}
         try:
-            self._rehearse(
+            held = self._rehearse(
                 CandidateMigrationSet(
                     root=self._paths.root,
                     knowledge_directory=self._knowledge_directory(),
@@ -2046,12 +2221,12 @@ class ProposalService:
                     landed=landed,
                     incoming=(),
                 )
-            )
+            ).items
         except SchemaUnreadableError:
             raise
         except (TheurianError, OSError) as exc:
-            return exc
-        return None
+            return exc, {}
+        return None, held
 
     def _require_directory(self, proposal_id: ProposalId) -> _ProposalLocation:
         """Find the one directory this id names, across both locations (ADR-0028).
@@ -4336,6 +4511,236 @@ def _write_file(destination: Path, data: bytes, *, exclusive: bool) -> None:
         opened.write(data)
 
 
+def _floor_refusal(
+    lowered: tuple[tuple[ItemId, Sensitivity, Sensitivity], ...],
+    readmitted: tuple[tuple[ItemId, KnowledgeStatus, KnowledgeStatus], ...],
+) -> ProposalError | None:
+    """The accept refusal for what the replay changed, naming every cause at once."""
+    causes: list[str] = []
+    remedies: list[str] = []
+    if lowered:
+        causes.append(
+            f"lower the sensitivity of {_names([describe_lowering(*change) for change in lowered])}"
+        )
+        # A re-draft is refused for a readmitted item, so the re-draft remedy stays
+        # only while some lowered item is not also readmitted.
+        readmitted_ids = {change[0] for change in readmitted}
+        if all(change[0] in readmitted_ids for change in lowered):
+            remedies.append("Nothing has moved. " + DECLASSIFY_REMEDY)
+        else:
+            remedies.append(ACCEPT_LOWERING_REMEDY)
+    if readmitted:
+        causes.append(f"readmit {_names([describe_readmission(*change) for change in readmitted])}")
+        remedies.append(READMIT_REMEDY if lowered else ACCEPT_READMISSION_REMEDY)
+        if lowered and ACCEPT_LOWERING_REMEDY not in remedies:
+            # Both migrations are hand-authored; the proposal replays before either.
+            remedies.append(DRAFT_AGAIN_CLAUSE)
+    if not causes:
+        return None
+    return ProposalError(
+        "Accepting this proposal would " + " and would ".join(causes) + ".",
+        remedy=" ".join(remedies),
+    )
+
+
+_STATUS_WRITERS = (CreateItem, UpsertRevision, DeprecateItem, RestoreItem)
+_SENSITIVITY_WRITERS = (CreateItem, UpsertRevision, ChangeSensitivity)
+
+
+def _writes(migration: Migration, move: PermissiveMove) -> bool:
+    """Whether ``migration`` has an operation that sets ``move``'s field on its item.
+
+    Derived from the loaded landed migrations' operations: the replay records
+    which migration last wrote a field only for the rows it reports, not for each
+    (item, field).
+    """
+    writers = _STATUS_WRITERS if move.field == "status" else _SENSITIVITY_WRITERS
+    return any(
+        isinstance(operation, writers) and operation.item_id == move.item_id
+        for operation in migration.operations
+    )
+
+
+def _refuse_a_reported_upsert(
+    location: _ProposalLocation,
+    document: Mapping[str, object],
+    held_moves: tuple[PermissiveMove, ...],
+    union: Replay,
+    landed_migrations: tuple[Migration, ...],
+) -> None:
+    """Refuse a proposal whose accept would add or re-attribute a permissive-move report row.
+
+    The baseline is the landed-alone report: a row already in it, naming the same
+    migration as what it undoes, never blocks.
+
+    A landed migration's row that only appears with this proposal's migration
+    replaying before it is the case a withdrawal or raise minted before a landed
+    update hits: the update's own labels nullify it (GHSA-v2qg-23fc-7fqp). A held
+    row is re-attributed when the union's names another migration as what it
+    undoes: a raise, or a restore then a deprecation, replaying after the write the
+    row undid and before the update becomes what the update overwrites. A landed
+    migration can take that place too: a restore in the proposal replaying before
+    a landed deprecation of an already-deprecated item makes that deprecation what
+    the update overwrites.
+
+    The incoming migration's own row, when new, is named instead of any landed one.
+    The floors compare where the landed set ends with where the union ends, so they
+    pass a proposal whose migration replays before a landed one that re-sets what its
+    upsert loosened: the ``restoreItem`` the readmission remedy sends its reader to,
+    written after the draft minted this migration's id. Accepted, the upsert would
+    be reported as moving the item for as long as the migration exists. Re-minting
+    the id here was rejected: it is the proposal's provenance (ADR-0013).
+    """
+    introduced = introduced_moves(held_moves, union.moves)
+    if not introduced:
+        return
+    incoming = _migration_id_or_none(document.get("id"))
+    row = next((move for move in introduced if move.migration_id == incoming), None)
+    if row is None:
+        row = introduced[0]
+        raise ProposalError(
+            f"Accepting this proposal would make the landed migration {row.migration_id.value} "
+            f"move {_names([row.item_id.value])} {row.field} from {row.before.value} to "
+            f"{row.after.value}, undoing what this proposal sets: this proposal's migration "
+            "replays before it.",
+            remedy=_redraft_remedy(
+                _kinds_of(document),
+                row.migration_id.value,
+                [m for m in landed_migrations if m.migration_id == row.migration_id],
+                location,
+            ),
+        )
+    after = set(union.order[union.order.index(row.migration_id) + 1 :])
+    later = [
+        m.migration_id.value
+        for m in sorted(landed_migrations, key=lambda m: union.order.index(m.migration_id))
+        if m.migration_id in after and _writes(m, row)
+    ]
+    landed = "the landed migration" if len(later) == 1 else "the landed migrations"
+    raise ProposalError(
+        f"Accepting this proposal would leave `theurian migrate validate` reporting its "
+        f"migration {row.migration_id.value} as moving {_names([row.item_id.value])} "
+        f"{row.field} from {row.before.value} to {row.after.value}: it replays before "
+        f"{landed} {_names(later)}.",
+        remedy=_redraft_remedy(
+            _kinds_of(document),
+            ", ".join(later),
+            [m for m in landed_migrations if m.migration_id.value in later],
+            location,
+        ),
+    )
+
+
+def _kinds_of(document: Mapping[str, object]) -> frozenset[str]:
+    return frozenset(
+        op
+        for _, operation in _mappings_in(document.get("operations"), set())
+        if isinstance(op := operation.get("op"), str)
+    )
+
+
+def _redraft_remedy(
+    kinds: frozenset[str],
+    after_what: str,
+    after: list[Migration],
+    location: _ProposalLocation,
+) -> str:
+    """The remedy for a refusal whose cure is a fresh migration replaying after a landed one.
+
+    Routed by every kind the proposal carries: a tool is named only when it can draft
+    all of them, else the whole proposal is authored by hand.
+    Replay order alone does not place a fresh draft after a landed migration, so every
+    route names ``dependsOn``.
+    Built by concatenation: the ids are validated MigrationIds, the rest constants.
+    """
+    depends = "`dependsOn: [" + ", ".join(m.migration_id.value for m in after) + "]`"
+    only_through = " only through its `dependsOn`"
+    if kinds <= {k.value for k in _REFUSED_TO_CONTENT_PATH}:
+        route = (
+            "Draft this change again with `theurian propose`, so it replays after "
+            + after_what
+            + only_through
+            + "; edit "
+            + depends
+            + " into the drafted migration file, as the command has no option for it."
+        )
+    elif kinds <= {k.value for k in V1_OPERATION_KINDS}:
+        route = (
+            "Draft this change again with `knowledge.generateMigrationDraft`, so it replays after "
+            + after_what
+            + only_through
+            + ", with "
+            + depends
+            + " in its document."
+        )
+    else:
+        route = (
+            "Author the "
+            + " and ".join(sorted(kinds))
+            + (" operations" if len(kinds) > 1 else " operation")
+            + " as a migration that replays after "
+            + after_what
+            + only_through
+            + ", declaring "
+            + depends
+            + ", and apply it with `theurian migrate apply` once a human has reviewed it."
+        )
+    return "Nothing has moved. " + route + " Then delete " + location.relative + "/."
+
+
+#: The draft-side refusal for a retired item. Constants naming no status: the
+#: text must not say which retired kind an item is.
+RETIRED_ITEM_MESSAGE = (
+    "This item has been withdrawn from the served set, and a content update does not "
+    "bring it back, so no update is written for it."
+)
+
+
+def _refuse_a_retired_item(current: ItemLabels) -> None:
+    """Refuse a draft for an item whose status the gates withhold.
+
+    Over MCP this is unreachable by construction: the caller-scoped lookup answers
+    ``None`` for a retired item, so it drafts like an id nothing created and
+    ``accept`` is where the floor refuses it. The CLI's and the OKF import's
+    lookups are the operator's own unscoped view, which is why they reach it.
+    """
+    if not may_surface(current.status, include_unapproved=True):
+        raise ProposalError(RETIRED_ITEM_MESSAGE, remedy=READMIT_REMEDY)
+
+
+def _refuse_a_lower_sensitivity(request: ProposalRequest, current: ItemLabels) -> None:
+    """Refuse a draft for an item the lookup returned that names a sensitivity below its own.
+
+    The message is a constant and names neither label, but refused or drafted is
+    still one bit about the item's class. What bounds that bit is the caller's
+    lookup: this runs only for an item it returned, so over MCP a withheld id
+    never reaches here and is answered as an absent one; ``accept`` refuses its
+    lowering. For a returned item
+    with a revision, ``knowledge.get`` already publishes ``sensitivity`` to the
+    same caller, so the bit discloses nothing new. For one with a ``createItem``
+    and no revision it does: ``knowledge.get`` answers that item as not present.
+    """
+    if request.sensitivity is not None and is_lowering(current.sensitivity, request.sensitivity):
+        raise ProposalError(
+            "A content update cannot lower the sensitivity of the item it updates.",
+            remedy=DECLASSIFY_REMEDY,
+        )
+
+
+def _inheriting(request: ProposalRequest, current: ItemLabels) -> ProposalRequest:
+    """``request`` with every governance label it left out set to the item's own.
+
+    An update that omitted one would otherwise land the loader's default over the
+    item's current label (GHSA-v2qg-23fc-7fqp).
+    """
+    return replace(
+        request,
+        sensitivity=current.sensitivity if request.sensitivity is None else request.sensitivity,
+        trust_level=current.trust_level if request.trust_level is None else request.trust_level,
+        namespace=current.namespace if request.namespace is None else request.namespace,
+    )
+
+
 def _migration_document(  # noqa: PLR0913 -- the fields a migration has; all keyword-only
     request: ProposalRequest,
     *,
@@ -4350,12 +4755,15 @@ def _migration_document(  # noqa: PLR0913 -- the fields a migration has; all key
     ``status: approved`` is right even though nobody has approved it yet: the
     file applies only once a human has merged it, and ``draft`` would land
     knowledge that ``theurian index build`` leaves out. ``trustLevel`` and
-    ``sensitivity`` are written only when the caller set them (``--trust-level``,
+    ``sensitivity`` are written only when the request carries them. For an item
+    ``draft``'s lookup found -- an update, or the first revision of an item created
+    with no revision -- it always does: ``draft`` has filled each one the caller
+    left out with the item's current label (GHSA-v2qg-23fc-7fqp). For an item it
+    did not find it does only when the caller set them (``--trust-level``,
     ``--sensitivity``): left unset they are absent from the file and the loader
-    applies its defaults, ``unverified`` and ``internal``. Stamping those
-    defaults in unasked-for would assert a judgement the caller never made, so
-    the omission is surfaced in the CLI's next steps instead of written here
-    (#249).
+    applies its defaults, ``unverified`` and ``internal``. Stamping those defaults
+    in unasked-for would assert a judgement the caller never made, so the omission
+    is surfaced in the CLI's next steps instead of written here (#249).
     """
     metadata: dict[str, object] = {
         "title": request.title,

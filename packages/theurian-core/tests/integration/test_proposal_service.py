@@ -24,6 +24,7 @@ from fakes.clock import FrozenClock
 from fakes.ids import SeededIdGenerator
 from hang_guard import CAN_INTERRUPT_A_HANG, fails_rather_than_hanging
 
+from theurian.application.item_labels import CurrentItem
 from theurian.application.project_service import ProjectPaths, initialize_project
 from theurian.application.proposal_service import (
     _PERMISSION_ERRNOS,
@@ -40,7 +41,7 @@ from theurian.application.proposal_service import (
     _refuse_past_the_operation_cap,
     _require_filename_matches_id,
 )
-from theurian.cli.migration_pipeline import rehearse_migration_set
+from theurian.cli.migration_pipeline import current_item_in, rehearse_migration_set
 from theurian.domain.enums import KnowledgeKind
 from theurian.domain.errors import (
     InputTooLargeError,
@@ -60,7 +61,7 @@ from theurian.domain.identifiers import (
     TaskId,
 )
 from theurian.domain.knowledge import AUTHORED_IN_THEURIAN, SourceAnchor
-from theurian.domain.migration import Migration, current_revision_in
+from theurian.domain.migration import Migration
 from theurian.domain.project import DEFAULT_KNOWLEDGE_DIRECTORY
 from theurian.domain.proposal import Evidence
 from theurian.domain.values import JSON, MARKDOWN, YAML, ContentHash
@@ -143,9 +144,11 @@ def service(paths: ProjectPaths) -> ProposalService:
     # guard), `accept` reads the same set `migrate validate`/`apply` do when it
     # asks whether a recorded migration id is in place (#253), and the pin guard
     # reads it when it asks which bodies are already pinned (#234).
-    def current_revision(item_id: ItemId) -> RevisionId | None:
+    def current_item(item_id: ItemId) -> CurrentItem | None:
         loaded = load_migrations(paths.root, paths.migrations, SCHEMAS)
-        return current_revision_in(loaded.migration_set, item_id)
+        return current_item_in(
+            loaded, item_id, paths=paths, project_id=ProjectId("demo"), clock=FrozenClock()
+        )
 
     def landed_migration(migration_id: MigrationId) -> Migration | None:
         loaded = load_migrations(paths.root, paths.migrations, SCHEMAS)
@@ -161,7 +164,7 @@ def service(paths: ProjectPaths) -> ProposalService:
         clock=FrozenClock(),
         ids=SeededIdGenerator(),
         validate=_validator,
-        current_revision=current_revision,
+        current_item=current_item,
         landed_migration=landed_migration,
         landed_migrations=landed_migrations,
         # The real rehearsal, not a double: the pre-check's whole point is that
@@ -506,7 +509,7 @@ def test_expected_revision_on_a_new_item_is_refused_at_generation(
     service: ProposalService,
 ) -> None:
     """A first revision has nothing to replace, so the guard is a mistake."""
-    with pytest.raises(ProposalError, match="does not exist yet"):
+    with pytest.raises(ProposalError, match="has no current revision"):
         service.draft(_request(expected_revision=RevisionId("01K9D2G8YT6PXN0VKS4WBZ7RQM")))
 
 

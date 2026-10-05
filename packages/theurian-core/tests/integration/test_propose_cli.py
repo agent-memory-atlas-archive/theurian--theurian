@@ -1521,6 +1521,13 @@ def test_the_accept_replay_and_migrate_apply_reach_one_apply_function() -> None:
         apply_command.__globals__["apply_migration_set"]
         is migration_pipeline.rehearse_migration_set.__globals__["apply_migration_set"]
     ), "the replay and migrate apply now hold two definitions of one pipeline"
+    # The labels an update inherits (C6) are read back from the engine's own apply
+    # too: a second fold of `with_revision` could disagree with it about a label.
+    assert "apply_migration_set" in _referenced_names(migration_pipeline.current_item_in)
+    assert (
+        apply_command.__globals__["apply_migration_set"]
+        is migration_pipeline.current_item_in.__globals__["apply_migration_set"]
+    ), "the labels an update inherits no longer come from the pipeline migrate apply runs"
     # The control that proves this walk can answer "no": a real apply must not
     # route through the rehearsal, and a walk that reported every name in the
     # interpreter would claim it does.
@@ -1846,7 +1853,8 @@ def test_a_draft_given_none_of_the_governed_options_stages_what_it_always_did(
 ) -> None:
     """The compatibility pin. This one passes today and must keep passing.
 
-    Omitting the options must change nothing: the four fields stay *absent* from
+    Omitting the options must change nothing for the id this draft names, which
+    nothing has created: the four fields stay *absent* from
     the YAML rather than being written at their schema defaults. Absent and
     `trustLevel: unverified` load identically -- the loader applies the default
     -- but they do not read identically to a human, and writing an unasked-for
@@ -1856,7 +1864,7 @@ def test_a_draft_given_none_of_the_governed_options_stages_what_it_always_did(
     The set is asserted rather than the bytes because this file drives the real
     CLI: the ids and the timestamp differ on every run, so a byte-for-byte pin
     would need a frozen clock this surface does not take. The service tests own
-    that granularity.
+    that granularity. An item that exists now gets its inherited labels written.
     """
     code, payload = _draft(project)
 

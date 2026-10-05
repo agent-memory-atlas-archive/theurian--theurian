@@ -867,9 +867,13 @@ stored record, `fixCommit` is a value Theurian verifies rather than one it
 believes, and `generalizable` is satisfied by offering a generalization at all. A
 gate the caller fills is a gate the caller decides, so none of the seven is
 spellable in the input. The same reason keeps `trustLevel`, `sensitivity`,
-`contentType` and `local` off it: the first two are the candidate's, the third is
-`text/markdown` because a generalization is prose, and a `--local` proposal would
-sit where the human review cannot reach it (ADR-0013 point 7).
+`contentType` and `local` off it: the first two are the candidate's (`inferred`;
+`internal` for an item the tool does not find — an id nothing has created, or
+one outside the caller's view — and otherwise the item's current sensitivity,
+which is never lowered, whether the call is an update or the first revision of
+an item created with no revision), the third is `text/markdown` because a
+generalization is prose, and a `--local` proposal would sit where the human
+review cannot reach it (ADR-0013 point 7).
 
 `category` is the eleven-member `ReviewCommentCategory` vocabulary, closed in the
 published input schema rather than in the handler, so a wrong value is refused at

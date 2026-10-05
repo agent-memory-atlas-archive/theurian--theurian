@@ -22,6 +22,1140 @@ each implementation slice owes is named in *Compliance*.
 which is reachable from `origin/main`. Where a fact is a *population*, the key is
 stated beside the number so a reader can attack the key and not only the count.
 
+> **Amended by GHSA-v2qg-23fc-7fqp (2026-10-01).** Implementing decision 1 as
+> written gave `knowledge.proposeChange` a way to lower an item's sensitivity,
+> the effect decision 3 meant to keep off this surface. It also gave it, and
+> `theurian propose`, a way to readmit a retired item, the effect decision 3
+> pulled `restoreItem` to keep off it. The fix moves this
+> record in the places listed below. The block sits here, above *Context*,
+> because those places span *Decision*, *Consequences* and *What this does not
+> close*; the paragraphs themselves stand as they were accepted.
+>
+> **What implementing it revealed.** A content update is not neutral about an
+> item's labels. `KnowledgeItem.with_revision` (`domain/knowledge.py`) gives the
+> item the status, owner, trust level, sensitivity, namespace and kind of the
+> revision an `upsertRevision` lands, so a revision that leaves a label out does
+> not leave the item's label alone. The loader reads an absent `sensitivity` as
+> `internal` and an absent `trustLevel` as `unverified`, and the drafter wrote an
+> absent `namespace` as the item id's own prefix. Under decision 1's rows:
+>
+> - an update that omitted `sensitivity` turned a `confidential` item
+>   `internal`, and the migration a reviewer approved said nothing about it.
+>   Over the wire this needs the item in the caller's view, so a serving ceiling
+>   raised to `confidential`;
+> - an update that named `sensitivity: public` lowered an `internal` item, in
+>   the default configuration;
+> - `review.generateKnowledgeCandidate` named `internal` on every update;
+>   `theurian propose` drafted the same way as `knowledge.proposeChange`; and
+>   `theurian propose accept` landed all of it;
+> - every revision the drafter wrote said `status: approved`, so a merged
+>   update put a `deprecated`, `superseded` or `rejected` item back in the
+>   served set, `rejected` included: through `theurian propose` for any retired
+>   item, and over the wire for one a `createItem` made and nothing revised,
+>   whose first revision is the call the wire lookup's `None` lets through.
+>
+> What moves:
+>
+> - **Decision 1, the `namespace?` and `trustLevel?`/`sensitivity?` rows.**
+>   "Absent defaults to the item id's own" and "absent means 'not stated'" now
+>   hold only for **an item the drafter's lookup does not find** — on the CLI,
+>   one no landed migration creates; over the wire, also one the caller may not
+>   see (the decision 6 item below) — where there is no label to keep and #249's
+>   reasoning stands. For an item it finds, an omitted `sensitivity`,
+>   `trustLevel` or `namespace` is the item's current value, and the drafter
+>   writes it into the migration, so the reviewer reads the label the item will
+>   hold. That is every update, and also the first revision of an item a
+>   `createItem` made and no `upsertRevision` has revised: such an item already
+>   holds labels, and its first revision would replace them with the loader's
+>   defaults exactly as an update would. That first revision still takes no
+>   `expectedRevision`, because `_check_expected_revision` keys on the revision
+>   and not on the item, so the `expectedRevision?` row stands as written. Of
+>   the three labels, only the namespace rewrite was visible in the diff before;
+>   the other two changed silently. A label the caller names still wins, with
+>   the one exception in the next item.
+> - **Decision 3's reason for pulling `changeSensitivity`.** "V1 does not carry
+>   it" was true of `knowledge.generateMigrationDraft` and false of the surface:
+>   `knowledge.proposeChange` reached the same effect through `upsertRevision`'s
+>   `metadata`, the operation decision 3's table classifies only as *Moves
+>   content*. The reason stands — a declassification widens who may read an item
+>   by an amount the reviewer cannot see — and it now holds on every proposal
+>   path. `ProposalService.draft` — which `theurian propose`,
+>   `knowledge.proposeChange` and `review.generateKnowledgeCandidate` call;
+>   `generateMigrationDraft` drafts through `draft_from_document` and carries
+>   neither `changeSensitivity` nor `upsertRevision` — refuses a draft that
+>   names a sensitivity below the current one of an item its lookup returns,
+>   with a remedy naming the
+>   one declassification path: a hand-authored `changeSensitivity` migration
+>   under `.theurian/migrations/`. The CLI's lookup returns any item the landed
+>   set holds; the MCP tools' returns one the caller may see (the decision 6
+>   item below). Over the wire an item outside the caller's view is answered as
+>   an id nothing created is, so a lower sensitivity named for it is not refused
+>   at draft, and the `accept` floor below is what refuses it.
+>   `review.generateKnowledgeCandidate`'s
+>   `internal` is the candidate type's default, not a statement, and its request
+>   says so (`ProposalRequest.sensitivity_is_default`, which only that path
+>   sets): for an item the lookup finds, the drafter drops it, so the candidate
+>   inherits the item's sensitivity rather than meeting the refusal — on an
+>   update, where the request names none anyway, and on the first revision of a
+>   create-only item, where it names `internal`
+>   ([ADR-0033](0033-knowledge-candidate-generation.md)'s matching amendment). A
+>   sensitivity named through `knowledge.proposeChange` or `theurian propose` is
+>   compared. `theurian propose accept` refuses any proposal after whose replay
+>   with the landed set an existing item holds a lower sensitivity than the
+>   landed set alone gives it, whichever operation moved the label. That covers a
+>   proposal drafted before this fix with the key omitted, one whose
+>   `sensitivity` was edited by hand, one whose migration sorts after a later
+>   reclassification, and one carrying a `changeSensitivity` of its own. The
+>   comparison needs the landed set to replay on its own. When it replays only
+>   together with the proposal — as when the proposal creates an item that a
+>   landed `changeSensitivity` sorting after it reclassifies — `accept` has no
+>   labels in place to compare against, so it refuses with that reason and moves
+>   nothing. The refusal carries the replay engine's own words, and its remedy
+>   is to read what they name in `.theurian/migrations/` and make the set replay
+>   on its own — `theurian migrate apply` runs the same replay;
+>   `theurian migrate validate` still reports such a set valid, because its
+>   verdict does not rest on a replay, and its `permissiveMovesUnavailable` says
+>   the set does not replay
+>   (`test_permissive_move_report.py::test_validate_on_a_set_that_does_not_replay_stays_valid_and_says_the_report_is_unavailable`)
+>   — then accept again. A
+>   lowering's remedy names one step per cause: `theurian migrate apply` when the
+>   served state lags the landed migrations, which is how a draft made over the
+>   wire comes to carry a stale label; otherwise a new draft naming the item's
+>   current sensitivity or omitting it; and, to lower the label, the
+>   hand-authored `changeSensitivity`. It also says that once that migration
+>   lands, the update is drafted again with `theurian propose` rather than this
+>   proposal accepted again, because the proposal's migration id predates the
+>   migration and replays before it. Review found the lowering remedies without
+>   that clause, which the readmission remedy already carried; it is now
+>   `item_labels.DRAFT_AGAIN_CLAUSE`, in `ACCEPT_LOWERING_REMEDY` and in
+>   `_floor_refusal`'s remedy for a proposal that readmits every item it lowers
+>   (`test_floor_refusal_remedy.py::test_every_remedy_that_sends_the_reader_to_a_migration_says_to_draft_again_not_accept_again`).
+>   Since the re-check's fix wave below, the clause also says to edit that
+>   migration's id into the new draft's `dependsOn`: at first only if that
+>   migration declared `dependsOn`, and since the fix wave's id-order finding
+>   whatever it declares, because only `dependsOn` places the new draft after it.
+> - **Decision 3's reason for pulling `restoreItem`.** "`restoreItem` is
+>   pulled, because it readmits from any status" — `rejected` included, with no
+>   transition check — and pulling it kept readmission off the surface. That
+>   was true of `knowledge.generateMigrationDraft` and false of the surface:
+>   `knowledge.proposeChange` reached readmission through `upsertRevision`'s
+>   `metadata.status`, which the drafter always wrote as `approved`, for a
+>   create-only retired item, and `theurian propose` reached it for any retired
+>   item. The reason stands, and it now holds on every proposal path.
+>   `ProposalService.draft` refuses to draft for an item its lookup returns
+>   retired (`_refuse_a_retired_item`), in one constant message that names no
+>   status, with a remedy naming the one readmission path: a hand-authored
+>   `restoreItem` migration under `.theurian/migrations/`. Only the CLI's lookup
+>   returns a retired item, so the refusal reaches `theurian propose` and
+>   `theurian okf import`. An import never names `expectedRevision`, so the
+>   cheap revision check refuses a retired item with a revision first; on that
+>   refusal path one replay then finds it retired, and the retired refusal is
+>   what `draft` raises, as for `theurian propose` with a missing or stale
+>   `--expected-revision` (the decision 6 item below). Measured on 2026-10-02 by
+>   a spy on `ProposalService.draft` under `okf import`; the import's refusal
+>   record names only `ProposalError`, so its output is the same either way. A
+>   create-only retired item meets the check without that first refusal. Over
+>   the wire the refusal is
+>   unreachable by construction: decision 6's lookup answers `None` for a
+>   retired item, so the tools answer it as an id nothing created, and `accept`
+>   is where a draft for it is refused. `theurian propose accept` refuses any
+>   proposal after whose replay with the landed set an item the landed set
+>   alone leaves non-surfaceable — `deprecated`, `superseded` or `rejected` — is
+>   surfaceable — `approved`, `draft` or `proposed` — whichever operation moved
+>   the status. Both sides are judged by
+>   `may_surface(status, include_unapproved=True)`, the read gates' own
+>   predicate under its widest flag, in
+>   `application/item_labels.py :: readmitted_items`, so the floor and the gates
+>   cannot disagree about what is served. That covers an update with `approved`
+>   drafted before this check, one restated by hand to `draft` or `proposed`, a
+>   draft whose migration replays after a landed deprecation that sorts before
+>   it, the
+>   wire's draft for a create-only retired item, and a proposal carrying a
+>   `restoreItem` of its own. Its remedy names the hand-authored `restoreItem`.
+>   Moving `draft` or `proposed` to `approved` through a proposal stays allowed,
+>   and not as a special case: both are surfaceable on that same predicate, so
+>   nothing is readmitted, and the merge of the proposal is the approval.
+> - **What `accept` lands, in two halves (H3).** `accept` has no operation write
+>   set: it moves whatever operations a proposal's migration carries. Because
+>   both floors compare the state a replay leaves rather than the operations a
+>   document names, a proposal carrying a `changeSensitivity` that lowers an
+>   item, or a `restoreItem` that readmits one, is refused. That is a
+>   consequence of comparing post-state, not a widening of what `accept` checks:
+>   neither floor reads which operations a proposal carries, so one that moves
+>   no gate label input in the permissive direction passes both. Which operations a
+>   proposal may carry at all — the write set — stays with #841's A1 slice.
+> - ***Consequences*, *Negative*, the third item**, says an agent that reaches
+>   for `changeSensitivity` "has no tool to be redirected to". Until this fix
+>   the effect had one: the tool `generateMigrationDraft`'s own `upsertRevision`
+>   refusal redirects to. It has none now, and the sentence is true as written.
+> - ***What this does not close*, item 4**, says widening the surface to
+>   `changeSensitivity` needs its own recorded justification. The effect was
+>   reachable without that widening and without that justification. From this
+>   fix on no write-intent tool lowers a sensitivity, which is the premise the
+>   item rests on; the justification is still unwritten.
+> - **Decision 6 covers the new refusal, through a renamed lookup.**
+>   `CurrentRevisionLookup` is now `CurrentItemLookup`
+>   (`application/item_labels.py`): one read answers both the current revision
+>   and the labels a draft inherits, so the two cannot come from different
+>   states. The name `CurrentRevisionLookup` returns for something narrower: an
+>   optional, revision-only lookup that the CLI and the OKF import inject so a
+>   missing or stale `expectedRevision` is decided before `CurrentItemLookup`
+>   replays the landed set. When that check refuses, `draft` makes one replay,
+>   on the refusal path only, to tell a retired item apart: its remedy, "Pass
+>   --expected-revision", is a step the retired refusal then blocks, so a retired
+>   item gets the retired refusal instead. A draft the check passes makes no
+>   replay beyond its own.
+>   `test_candidate_default_flag_and_revision_precedence.py::test_an_update_without_an_expected_revision_is_refused_and_replays_only_for_retirement`
+>   and `::test_an_update_with_a_stale_expected_revision_is_refused_and_replays_only_for_retirement`
+>   assert that `current_item_in` is called once, for the item, on each refusal,
+>   and `::test_an_update_with_the_current_expected_revision_reaches_the_replay`
+>   once on a draft that passes;
+>   `test_okf_import_composition_root.py::test_a_concept_for_an_item_with_a_revision_is_refused_and_replays_only_to_check_retirement`
+>   asserts the same single call under `okf import`; and
+>   `test_retired_item_remedies.py::test_a_retired_item_drafted_without_expected_revision_gets_the_retired_refusal`
+>   asserts exit 2, the retired message, a remedy naming `restoreItem` and not
+>   "Pass --expected-revision", and nothing written. `draft` then checks the
+>   revision again against `CurrentItemLookup`'s answer, so the revision it
+>   accepts and the labels it inherits still come from one read; the MCP root
+>   injects none. The MCP
+>   closure decision 6's *Landed* entry names as
+>   `register._draft_only_proposals.current_revision` is now
+>   `register._draft_only_proposals.current_item`, and it answers an item with
+>   no revision too, with no revision id, so a create-only item in the caller's
+>   view keeps its labels over the wire as well. The lowering refusal runs only
+>   for an item that lookup returned, so a withheld id is answered as an absent
+>   one is — refused for an `expectedRevision` it names, drafted when it names
+>   none — and the refusal's text is a constant that names no sensitivity
+>   level. The constant does not make the refusal silent about the level: refused or
+>   drafted is one bit, below the item's class or not, about an item in the
+>   caller's view — the population this decision's bind deliberately leaves out.
+>   For an item with a revision the bit adds nothing, since `knowledge.get`
+>   publishes its `sensitivity`. For a create-only item it does: `knowledge.get`
+>   answers such an item as not present, in the same text it gives for an id
+>   nothing stored, while `knowledge.proposeChange` refuses a lowering for it and
+>   drafts the same call for an absent id.
+> - **Decision 6's table, its first row.** The refusal quoted there as
+>   "`<itemId> does not exist yet, so its first revision cannot replace <rev>`"
+>   now reads
+>   "`<itemId> has no current revision, so --expected-revision <rev> has nothing to replace.`",
+>   with the remedy "Drop --expected-revision to draft its first revision, or
+>   correct --item-id." It is one constant for an id nothing created, an id
+>   outside the caller's view and a create-only item, so what it publishes is
+>   *no current revision*, not non-existence: a create-only item exists, and
+>   dropping the flag drafts its first revision. Unlike the lowering refusal
+>   above, it does not tell an in-view create-only item from an absent id.
+>   `test_create_only_item_labels.py::test_an_mcp_expected_revision_on_an_in_view_create_only_item_matches_an_absent_id`
+>   sends one `expectedRevision` for an `internal` create-only item under the
+>   default ceiling and for an id nothing created, and asserts that the item's
+>   refusal is that text and remedy and that the two whole responses are equal.
+>   That the item is in view there is held by
+>   `::test_an_mcp_draft_omitting_labels_for_a_create_only_item_drafts_its_create_item_labels`,
+>   which drafts on the same fixture and stages its `security` namespace, not
+>   the id's `architecture`. For an id outside the caller's view,
+>   `::test_the_same_call_on_a_corpus_without_the_item_gets_the_same_bytes` and
+>   `::test_a_create_only_item_above_the_ceiling_answers_like_an_id_that_never_existed`
+>   under *What holds it* send an `expectedRevision`, assert that the text
+>   carries "has no current revision", and compare the raw responses of two
+>   corpora.
+>
+> **The closure.** The read gates take two label inputs from an item: its
+> status, through `may_surface`, and its sensitivity, through `may_disclose`.
+> Revision presence is read beside them and is not a label input, by design:
+> the read paths `CanonicalVisibility._may_surface`, `register.knowledge_get`
+> and `mcp/search.py :: _scan`, and the index builder and the OKF export, each
+> skip an item whose `current_revision_id` is `None`, inline. Only a first
+> revision moves that read, and what it then serves is the content its own
+> proposal carries, which the merge of that proposal approves. Two reads look
+> like further inputs and are not: `cli/index_commands.py :: _indexable_items`
+> repeats the builder's rule inline to count what a build was offered, and of
+> an item's labels reads only status and sensitivity; and
+> `validity.contains(asOf)`, in `_scan` and in the ranked path's `at_moment`,
+> is a filter the caller chooses, which drops rows the two gates admitted and
+> never adds one. This advisory is one class, a proposal that moves a label
+> input in the permissive direction — status from non-surfaceable to
+> surfaceable, or sensitivity to a lower class. Three controls hold it. The
+> draft refusals keep such a proposal from being written for an item the
+> drafter's lookup returns. The two `accept` floors refuse one against the
+> migrations landed when it is accepted, and they close the class by the
+> gates' own input set rather than by a list of operations: each compares the
+> state a replay leaves for every item the landed set holds, so an operation, a
+> document key or an order among the landed migrations that nobody listed meets
+> the same comparison. The permissive-move report names what the floors cannot
+> see, a withdrawal merged after the accept that the accepted update then
+> undoes, and `accept` refuses a proposal that would add a row to that report
+> or re-attribute one it already holds (below). Readmission has one path, a
+> hand-authored `restoreItem`
+> migration under `.theurian/migrations/`, as declassification has one, a
+> hand-authored `changeSensitivity`. Trust level, namespace, owner and kind are
+> not gate label inputs, so they are outside the class: an `upsertRevision`
+> still sets them, neither floor compares them, and they are residuals of this
+> fix, recorded here. What holds each floor is below.
+> `tests/unit/test_gate_item_inputs.py` holds the premise that the gates read
+> only these two label inputs, as far as its body reaches: it asserts that the
+> public `may_*` callables `domain/enums.py` defines, a cache-wrapped one
+> included, are exactly `may_surface` and `may_disclose`, that the first
+> parameter of each is annotated `KnowledgeStatus` and `Sensitivity`
+> respectively, and that `lowered_sensitivities` reads `sensitivity` and
+> `readmitted_items` reads `status`, and no other `ItemLabels` field, as
+> attributes in their own source. It reads names, annotations and attribute
+> access, and no gate parameter after the first, so a gate that decides inline,
+> outside `domain/enums.py` or under a name not starting `may_`, or one that
+> reads an item field through `getattr` or a helper, is outside it — the inline
+> revision-presence read above among them, which is why that read is named here
+> rather than left to the test. `tests/unit/test_gate_call_sites.py` pins every
+> call site of `may_surface` and `may_disclose`.
+>
+> **What the floors cannot see, and the third control.** The floors compare
+> once, at `accept`, and implementing them revealed a case that comparison
+> cannot reach. An approved item is updated through
+> `theurian propose --expected-revision`, and the update is accepted and
+> applied. A hand-authored `deprecateItem`, or a `changeSensitivity` to
+> `confidential`, whose id sorts before the update's migration — authored
+> first, merged after the accept — then lands. A full replay runs the
+> withdrawal first and the accepted upsert's `status: approved` and
+> `sensitivity: internal` second, so the withdrawal is nullified and nothing
+> refuses the set.
+> `test_permissive_move_report.py::test_an_update_accepted_after_a_withdrawal_that_sorts_first_is_reported_undoing_it`
+> builds both faces and asserts that `migrate validate` and `migrate apply` exit
+> 0 and that the item ends `approved` and `internal`; on 2026-10-02 an
+> in-process probe outside the suite found `knowledge.get` serving the updated
+> body, for both faces, to a caller under the default ceiling. It is graded
+> CRITICAL, on a corrected grading anchor: a merge approves only what its diff
+> shows, and a merge that cannot show the conflict is not an approval of the
+> outcome. Neither the withdrawal's diff nor the update's shows the other.
+>
+> **Decided: a report, not a refusal.** Refusing such a set would stop
+> histories that already apply, so `migrate validate` and `migrate apply` print
+> `permissiveMoves` and neither exit code moves. A replayed `upsertRevision` is
+> reported for a field only when both of two clauses hold: (1) the upsert
+> itself loosened the field, compared with the state just before it; and (2)
+> its migration left the item looser than it found it, comparing the
+> migration's end with its start. "Looser" is the floors' own test — for status,
+> `may_surface(…, include_unapproved=True)` going from false to true; for
+> sensitivity, a lower class by `DISCLOSURE_ORDER` — decided at
+> `application/permissive_moves.py :: _loosens`, which
+> `test_gate_call_sites.py` registers in `STATUS_GATE_READER_SITES`: it decides
+> what the report returns, and the upsert lands whatever it decides. An item
+> absent at its migration's start is never compared, and only upserts are
+> reported, never the sanctioned `deprecateItem`, `restoreItem` and
+> `changeSensitivity`. A row carries `migrationId`, `itemId`, `field`, `before`
+> and `after` (the field at that migration's start and end), `undoes` (the
+> migration that, before it, last changed whether the item may surface, or its
+> class) and `kind` — `undoes` when that change tightened the field, `lowers`
+> otherwise, by the definition below. `migrate validate` reports the whole set
+> every time, from a throwaway replay used only for the report, and its `valid`
+> verdict and exit code do not depend on that replay; when the replay fails,
+> `permissiveMoves` is `null` and `permissiveMovesUnavailable` carries the
+> engine's own words. `migrate apply` reports what that run applied.
+> `propose accept` does not print it, though it reads it to refuse (below),
+> and no file under `mcp/` or `schemas/mcp/` contains the key: it is the
+> operator's own replay, not a served path.
+> [The migration format](../protocol/migrations.md#permissive-moves-are-reported-not-refused)
+> documents it, each sentence with the test or measurement that holds it, the
+> tests in `tests/integration/test_permissive_move_report.py`,
+> `tests/integration/test_accept_refuses_a_reported_upsert.py`,
+> `tests/integration/test_accept_never_introduces_a_report_row.py`,
+> `tests/unit/test_permissive_move_writer_property.py`,
+> `tests/unit/test_floor_refusal_remedy.py` and
+> `tests/unit/test_introduced_moves.py`. They collect 45 tests from 33
+> functions, 15 from 14, 13 from 13, 52 from 2, 14 from 5 and 13 from 8, by
+> `pytest --collect-only -q` on 2026-10-03 after the fix wave's id-order
+> finding below, a function being a top-level `def test_`. This sentence said
+> 11 from 10, 12 from 12 and 7 from 3 for the second, the third and the fifth
+> after the re-check's fix wave, the same day; 9 from 8 and 7
+> from 7 for the second and the third after the second widening, the same day;
+> 4 from 4 and 11 from 7 for the third and the sixth after the first widening,
+> on 2026-10-02; 41 from 32 and 6 for the first two before the granularity fix
+> below, and 28 for the first before those, each of which no longer matched;
+> the first widening added the third and the sixth file.
+>
+> **`kind` is decided by the change's effect, not its operation.** The report
+> first decided it by operation type: a `deprecateItem` or `changeSensitivity`
+> was a withdrawal and every upsert was not. Review found that this misfiled
+> two races. An accepted update that undid an in-place `upsertRevision`
+> withdrawal — the current revision re-declared `rejected`, `superseded` or
+> `deprecated`, or at a higher class, the shape ADR-0024 decision 5 writes —
+> read `lowers`, which hid the reviewed withdrawal the report exists to
+> surface. And a lowering after a `changeSensitivity` that declassified the
+> item read `undoes`, naming a tightening that never happened. A change is now
+> a withdrawal when it tightened the field — status from a value
+> `may_surface(…, include_unapproved=True)` admits to one it does not,
+> sensitivity raised by `DISCLOSURE_ORDER` — which is `_loosens` read the other
+> way round. A write that does not change the field does not replace the
+> recorded one; what counts as a change is the next paragraph. A `createItem`
+> is never a withdrawal, and neither is any write in the migration that
+> created the item: that is the item's first labelling, at the granularity at
+> which the report never compares a new item. Held by
+> `test_permissive_move_report.py::test_an_in_place_withdrawal_by_upsert_is_what_an_accepted_update_is_reported_undoing`
+> (an accepted update, then an in-place upsert sorting before it that states
+> `rejected`, `superseded` or `deprecated`, or `confidential` over `internal`;
+> each row `kind: undoes`, naming the in-place migration),
+> `::test_a_declassification_is_not_a_withdrawal_so_a_further_lowering_is_reported_as_lowers`
+> (`confidential`, a `changeSensitivity` to `internal`, then an upsert to
+> `public`: `kind: lowers`),
+> `::test_a_restated_status_does_not_replace_the_withdrawal_that_set_it` (a
+> deprecation, an upsert restating `deprecated`, then one stating `approved`:
+> the row names the deprecation's migration, `kind: undoes`),
+> `::test_a_create_item_is_never_a_withdrawal_so_a_later_lowering_is_reported_as_lowers`
+> (a `createItem` stating `confidential`, then an upsert to `internal`:
+> `kind: lowers`), and
+> `::test_a_hand_authored_upsert_lowering_an_earlier_upserts_sensitivity_is_reported_as_lowers`,
+> whose item is created and stated `confidential` by an upsert in one
+> migration and later lowered: `kind: lowers`.
+>
+> **The effect is judged at the floors' granularity, not the value's.** The
+> previous closure measured effect at value granularity, which is the wrong
+> instrument for status. It decided "unchanged" by the label's value and
+> "withdrawal" by the floors' predicate. A status write between two retired
+> values — `deprecated`, `superseded`, `rejected` — changes the value and not
+> the predicate, so it was recorded as the field's writer, not as a
+> withdrawal, and displaced the real withdrawal before it: the accepted update
+> that then readmitted the item read `kind: lowers`. Review met four faces: a
+> `deprecateItem` then an in-place upsert to `rejected`; a `deprecateItem` then
+> one to `superseded`; an in-place `rejected` then a `deprecateItem`; and one
+> migration that deprecates and then supersedes. The third read `undoes` under
+> the operation-typed rule, naming the `deprecateItem`, so the effect rule
+> regressed it; the other three read `lowers` under both. Measured on
+> 2026-10-02 by feeding the four write sequences to `LabelWriters` as it stood
+> at each rule. A write now replaces the field's recorded writer only when it
+> changes the field's predicate value — for status, whether
+> `may_surface(…, include_unapproved=True)` admits the item; for sensitivity,
+> its class — and it is a withdrawal only when that change tightened the
+> field. Sensitivity never showed the defect: `DISCLOSURE_ORDER` is a total
+> order, so every change of a sensitivity value is a change of class, and value
+> and predicate granularity coincide there. That is stated here rather than
+> left assumed, and the second property test below holds it. Held by
+> `test_permissive_move_report.py::test_a_retired_to_retired_write_does_not_displace_the_withdrawal_an_update_is_reported_undoing`
+> (an accepted update, then each face sorting before it; each row names the
+> first write's migration, `kind: undoes`, from `migrate validate` and from
+> `migrate apply`) and by `test_permissive_move_writer_property.py`, which
+> feeds `LabelWriters` a first write and then a second for every ordered pair
+> of values. Of the 36 status pairs, the second replaces the first as the
+> writer exactly when it changes what `may_surface` answers, and is a
+> withdrawal exactly when it tightened it
+> (`::test_a_status_write_replaces_the_recorded_writer_only_by_changing_surfaceability`);
+> of the 16 sensitivity pairs, exactly when the value changes, and a withdrawal
+> exactly when it is raised
+> (`::test_a_sensitivity_write_replaces_the_recorded_writer_only_by_changing_the_class`).
+> Its first write always leaves a writer recorded, so it does not reach a field
+> with none, one an earlier `apply` last set. There the rule does not hold: a
+> write that changes the value is recorded even when the predicate does not
+> move, as no withdrawal, so a readmission after a write between two retired
+> statuses reads `kind: lowers` naming that write. Measured on 2026-10-02 by
+> feeding `LabelWriters` the two upserts with no earlier write; no test drives
+> it.
+>
+> **The recorded design limit: one migration is one reviewed diff.** A
+> migration that withdraws and re-asserts an item, or lowers and then restores
+> it, nets out and is not reported
+> (`test_permissive_move_report.py::test_a_migration_that_withdraws_and_reasserts_an_item_in_one_diff_is_not_reported`,
+> `::test_an_upsert_lowering_that_a_later_operation_restores_is_not_reported`).
+> Its reviewer saw both operations in one diff, which is what the grading
+> anchor asks of an approval.
+>
+> **Rejected predicates, each with the false positive it was measured to
+> produce.**
+>
+> - *Compare each operation with the state just before it.* It reported 26
+>   rows on this repository's own corpus, each a new item labelled in the
+>   migration that creates it: a `createItem` with the defaulted `internal`,
+>   then an upsert stating `public`, which is what
+>   `theurian propose --sensitivity public` writes for a new item. A report
+>   that fires on the maintainers' own history is noise nobody reads;
+>   `::test_a_new_item_labelled_in_the_migration_that_creates_it_reports_no_move`
+>   holds that shape at zero.
+> - *Compare the upsert's result with its migration's start alone.* It
+>   reported a migration doing `restoreItem` and then an upsert, which is the
+>   migration `READMIT_REMEDY` leads its reader to
+>   (`::test_a_restore_and_content_update_in_one_migration_reports_no_move`),
+>   and one doing `changeSensitivity: public` and then an upsert raising the
+>   item to `internal`
+>   (`::test_an_upsert_raising_the_label_is_not_reported_after_the_migration_made_it_public`).
+>   Clause (1) is what removes both.
+> - *Keep the start-only compare and record its false row (O1).* Rejected:
+>   Theurian's own remedy would then produce a permanent false `undoes` row.
+>
+> **An accept never introduces or re-attributes a report row.** This was first
+> stated, and ruled, for the proposal's own row only, as "nothing accepted is
+> reported at accept time"; the two widenings are recorded below. The same
+> false row was
+> still reachable another way. The floors compare where the landed set ends
+> with where it ends with the proposal, so they pass a proposal whose
+> migration replays before a landed one that re-sets what its upsert loosened.
+> The readmission refusal's remedy produced one: it sent its reader to
+> hand-author a `restoreItem` and stopped there, so the next step was to accept
+> the same proposal again. Its migration id was minted at the draft and sorts
+> before the restore, so its upsert takes the item from `deprecated` to
+> `approved` before the restore re-sets it, and both replays end alike;
+> accepted, it would be reported `kind: undoes` for as long as the migration
+> exists. Ruled in two parts. `accept` now reads the report of the replay with
+> the proposal, which the floors already run, and refuses, with exit 1 and
+> nothing moved, a proposal whose own migration a row names; it runs after the
+> two floors, so their refusals keep their text and order
+> (`application/proposal_service.py :: _refuse_a_reported_upsert`). Its error
+> names the proposal's migration, the item, the field, both values, and the
+> landed migrations that replay after it and write that field of that item,
+> read from their operations: `upsertRevision` and `createItem` write both
+> labels, `deprecateItem` and `restoreItem` status, and `changeSensitivity`
+> sensitivity. It first named every landed migration replaying after the
+> proposal's, which sent the reader to review migrations with nothing to do
+> with the refusal. Its remedy was then a fresh draft with `theurian propose`,
+> said to get a later migration id, and deleting the stale proposal directory.
+> Since the re-check's fix wave below it is routed by every kind the proposal
+> carries and names `dependsOn: [<every landed migration the error names>]`,
+> whatever those migrations declare: a later id is not what places the new
+> draft after them. And `ACCEPT_READMISSION_REMEDY` now says that once the
+> restore lands, the update is drafted again rather than accepted again, as
+> the lowering remedies do (above), with `dependsOn: [<its id>]` edited into
+> the new draft since the fix wave. The class is closed in three steps: a
+> permissive move is refused at accept, reported after, and an accept never
+> introduces or re-attributes a report row.
+> `test_accept_refuses_a_reported_upsert.py::test_accepting_a_proposal_that_replays_before_a_landed_restore_is_refused_and_moves_nothing`
+> drafts over MCP for a create-only `deprecated` item, has the first accept
+> refused, lands a `restoreItem` and asserts that the second accept exits 1,
+> with an error naming the proposal's migration id, the item, `status`, both
+> values (`deprecated` and `approved`) and the landed restore's migration id,
+> and saying it "replays before", a remedy naming `theurian propose` and
+> reading "replays after `<restore>`", and nothing moved under the proposals,
+> migrations or knowledge directories.
+> `::test_no_row_names_the_migration_of_a_proposal_accepted_across_a_landed_restore`
+> asserts that after that accept and a `migrate apply`, `migrate validate`
+> carries no row for the proposal's migration;
+> `::test_a_fresh_draft_after_the_restore_is_accepted_and_reports_nothing`
+> followed the remedy as it then read: a fresh `theurian propose` draft,
+> declaring no `dependsOn` and asserted to sort after a restore that declares
+> none, is accepted and the report is empty. Since the fix wave's id-order
+> finding below the remedy names `dependsOn`, and that test holds only a
+> restore that declares none and sorts before the fresh draft;
+> `::test_the_first_accept_of_a_proposal_for_a_retired_item_prints_the_draft_again_remedy`
+> asserts that the first refusal's remedy names `restoreItem` and
+> `theurian propose`, which the new refusal's remedy would fail had it run
+> first; `::test_the_readmission_remedy_says_to_draft_again_after_the_restore_lands`
+> reads the constant;
+> `::test_the_refusal_names_only_the_landed_migrations_that_wrote_the_reported_field`
+> lands one more migration after the restore, a `createItem` of another item
+> or a `changeSensitivity` of the same one, and asserts that the migration ids
+> in the error are exactly the proposal's and the restore's;
+> `::test_accepting_a_proposal_while_another_migrations_row_exists_leaves_only_that_row`
+> holds that a row the report already holds, naming another migration, does
+> not refuse — with a race row for one item already in the report, a first
+> revision drafted for a second item is accepted with exit 0, and after
+> `migrate apply` the report holds that row and no other; and
+> `::test_an_accepted_update_leaves_no_report_row_before_any_withdrawal_lands`
+> is the control.
+>
+> *Rejected: re-minting the migration id at `accept`* so that it sorts after
+> the landed set. The id is the proposal's provenance
+> ([ADR-0013](0013-ai-writes-produce-proposals.md)), recorded in its evidence
+> and named by its file, and rewriting it at `accept` is not a patch-shaped
+> change.
+>
+> **Widened after the anchored release-cut pass, by the maintainer's ruling of
+> 2026-10-02.** The refusal above keyed on the proposal's own migration, and
+> the anchored pass found a proposal that adds a row naming a landed one. A
+> `knowledge.generateMigrationDraft` call stages a `deprecateItem` for an
+> approved item, minting its migration id; a content update drafted after it
+> with `theurian propose` is accepted and applied; then the deprecation is
+> accepted. Its migration replays before the update's, whose
+> `status: approved` re-sets what it withdrew. That is the set the race above
+> leaves, which
+> `test_permissive_move_report.py::test_an_update_accepted_after_a_withdrawal_that_sorts_first_is_reported_undoing_it`
+> holds ending `approved` with `migrate validate` and `migrate apply` at exit
+> 0; its other face, a raise undone by an update restating the lower class, is
+> reached the same way by a proposal carrying a `changeSensitivity` raise.
+> Neither floor refused such an accept, since the item ends the same with the
+> proposal and without it, and the own-row refusal did not, since the row
+> names the update: on 2026-10-02 the withdrawal, raise and re-draft tests
+> below, run against the source before the widening, each failed on
+> `assert code == 1` with exit 0, and the same-item control passed. The
+> withdrawal was accepted and undone, and only the report printed after it
+> named the landed update as undoing it.
+>
+> The ruling widened the invariant: an accept never introduces a report row.
+> `accept` refuses, with exit 1 and nothing moved, when the report of the
+> replay with the proposal holds a row whose `(migrationId, itemId, field)`
+> the report of the landed set alone does not
+> (`application/permissive_moves.py :: introduced_moves`, called from
+> `_refuse_a_reported_upsert`). A row under a held key is the same row,
+> whatever `before`, `after` or `kind` the replay with the proposal reads for
+> it. **The baseline is the landed-alone report, not an empty one, because a
+> row already in the history, naming the same migration in `undoes`, must
+> never block an accept.** The `undoes` condition is the second widening's,
+> below. That row is not this accept's, and a project holding one, the
+> original defect's victims included, must still accept a proposal that leaves
+> it as it is. With an empty baseline `accept` refuses both controls below:
+> measured on 2026-10-02 by running them against the source with the baseline
+> replaced by an empty tuple. The baseline is the report of the landed-alone replay both floors
+> already compare against, which `_refuse_an_effective_lowering` now returns,
+> so the widening adds no replay; and the check stays where the own-row check
+> was, after both floors. The proposal's own row keeps the error and remedy
+> above. A landed migration's row is refused with "Accepting this proposal
+> would make the landed migration `<id>` move `<item>` `<field>` from
+> `<before>` to `<after>`, undoing what this proposal sets: this proposal's
+> migration replays before it." Its remedy was then "Nothing has moved. Draft
+> this change again with `theurian propose` so it gets a later migration id and
+> replays after `<id>`. Then delete `<proposal dir>/`."; the re-check's fix
+> wave below routes it by every operation kind the proposal carries and names
+> `dependsOn: [<id>]` in every route, since no id order is what places the new
+> migration after the landed one. Re-minting the id stays rejected, for the
+> reason above.
+>
+> `test_accept_never_introduces_a_report_row.py::test_a_withdrawal_minted_before_a_landed_update_is_refused_and_moves_nothing`
+> builds that face on an `approved`, `internal` item and asserts exit 1, an
+> error naming the update's migration id, the item and `status` and reading
+> "from deprecated to approved", a remedy naming the update's migration id and
+> not `theurian propose`, with no "accept" followed by "again" within one
+> sentence, nothing moved under the proposals, migrations or knowledge
+> directories, and, after `migrate apply`, the item `approved` and an empty
+> report.
+> `::test_a_sensitivity_raise_minted_before_a_landed_update_is_refused_and_moves_nothing`
+> hand-edits a staged `changeOwner` into a `changeSensitivity` to
+> `confidential`, lands an update naming `internal`, and asserts the same of
+> `sensitivity`, the error reading "from confidential to internal", with the
+> item `internal` after `migrate apply`.
+> `::test_the_withdrawal_drafted_again_after_the_update_is_accepted_and_takes_effect`
+> followed the remedy as it then read: a deprecation drafted with
+> `knowledge.generateMigrationDraft` after the update, declaring no
+> `dependsOn` and asserted to sort after it, is accepted with exit 0, and after
+> `migrate apply` the item is `deprecated` and the report empty. Since the fix
+> wave's id-order finding below the remedy names `dependsOn`, and that test
+> holds only an update that declares none and sorts before the fresh draft. The
+> baseline's two controls:
+> `::test_a_proposal_on_the_item_of_an_existing_row_that_leaves_the_row_alone_is_accepted`
+> reports a race row for the item, accepts a `changeOwner` of that same item
+> with exit 0, and asserts after `migrate apply` the report it had before; and
+> `test_accept_refuses_a_reported_upsert.py::test_accepting_a_proposal_while_another_migrations_row_exists_leaves_only_that_row`,
+> above, is the other-item case. `tests/unit/test_introduced_moves.py` feeds
+> `introduced_moves` held and union rows and asserts: an own row and a landed
+> row the held rows lack are introduced; a row under a held key is not,
+> identical or with other `before` and `after` or another `kind`; a row
+> differing from a held one in migration, item or field is; an
+> empty union introduces nothing; and the result keeps the union's order. The own-row
+> refusal's text through the widening is
+> `test_accept_refuses_a_reported_upsert.py::test_accepting_a_proposal_that_replays_before_a_landed_restore_is_refused_and_moves_nothing`,
+> above.
+>
+> **Widened again on 2026-10-03, as inside the maintainer's earlier ruling.**
+> The three-field key let an accept re-attribute a row the landed set already
+> reports: the same `(migrationId, itemId, field)`, naming another migration
+> as what it undoes. Both faces start from an `approved`, `internal` item, a
+> staged proposal P, an update U drafted after P with `theurian propose` and
+> accepted, and a migration D that sorts before P and lands after U's accept:
+>
+> - sensitivity: D raises the item to `confidential`, P to `restricted`, and U
+>   names `internal`; U's row, `confidential` to `internal` undoing D, becomes
+>   `restricted` to `internal` undoing P, so P's raise is overwritten;
+> - status: D deprecates the item, and P is a `restoreItem` then a
+>   `deprecateItem`; U's `deprecated` to `approved` row moves from undoing D to
+>   undoing P, its `before` and `after` unchanged.
+>
+> On 2026-10-03, with the three-field key patched back in-process, `accept`
+> exited 0 for both, and after `migrate apply` the item was `internal` and
+> `approved` respectively and U's row named P. The key is now
+> `(migrationId, itemId, field, undoes)`, so both are refused with exit 1,
+> nothing moved, and the landed-row error above, with the remedy the
+> re-check's fix wave below routes. It takes `undoes`
+> and not `before` because `undoes` is predicate-granular (above): it names the
+> last write that changed whether the item may surface, or its class. `before`
+> is the field's value at the migration's start: the status face leaves it
+> unchanged, and a write between two retired statuses moves it without
+> changing what either gate answers. The control is a deprecation of an item
+> already deprecated: it changes no predicate, so U's row keeps naming D and
+> the accept exits 0.
+>
+> `test_accept_never_introduces_a_report_row.py::test_a_raise_minted_before_an_update_that_already_undoes_a_landed_raise_is_refused`
+> asserts that before the accept the report is exactly U's `sensitivity` row,
+> `confidential` to `internal`, undoing D; then exit 1, an error naming U's
+> migration id, the item and `sensitivity` and reading "from restricted to
+> internal", a remedy naming U's migration id and not `theurian propose`, with
+> no "accept" followed by "again" within one sentence, nothing moved under the
+> proposals, migrations or knowledge directories, and after `migrate apply`
+> the report it started with.
+> `::test_a_withdrawal_that_restores_first_is_refused_when_it_would_take_over_an_update_row`
+> asserts the same of the status face, reading the starting report as U's
+> `status` row undoing D and the error for `status` reading "from deprecated
+> to approved".
+> `::test_a_deprecation_of_an_already_deprecated_item_leaves_the_update_row_as_it_was`
+> asserts the control's exit 0 and, after `migrate apply`, the report it
+> started with.
+> `tests/unit/test_introduced_moves.py::test_a_row_under_a_held_key_whose_undoes_differs_is_introduced`
+> holds as introduced a `status` and a `sensitivity` row naming the incoming
+> migration where the held row names another, and a row with no writer
+> recorded where the held row has one; the first widening's test asserted the
+> last was not introduced. Run against the three-field key as above, both face
+> tests failed on `assert code == 1` with exit 0, the three unit cases failed,
+> and the control passed. The same day, the remedy assertion these tests share
+> with the first widening's was tightened from any remedy containing
+> `theurian propose` or "again"; the descriptions above were corrected in
+> place, and no test reads them against the assertions.
+>
+> **2026-10-03, the re-check's fix wave.** The adversarial re-check of the two
+> widenings found the reported-upsert remedies unfollowable in two ways, each
+> graded HIGH, and the landed-row error's direction unpinned, graded MEDIUM:
+>
+> - (a) The remedy sent every refused proposal to `theurian propose`, which
+>   drafts content only. A refused `deprecateItem` could not be drafted again
+>   there, and neither tool drafts a `changeSensitivity` or `restoreItem`:
+>   `knowledge.generateMigrationDraft` refuses both (decision 3).
+> - (b) Both remedies said a fresh draft's later id replays after the landed
+>   migration. It does not when that migration declares `dependsOn`: each
+>   round of the replay sort takes every migration that is ready, by id
+>   (`domain/migration.py :: MigrationSet._topological_order`), so a migration
+>   declaring no `dependsOn` replays before one declaring any, whatever the
+>   ids. A fresh draft declares none, so it was refused again, and the remedy
+>   sent its reader round the same loop. That a later id was enough otherwise
+>   was itself false; the id-order finding below records why.
+> - (d) The tests read the error's `before` and `after` by membership, so an
+>   error stating them swapped would have passed.
+>
+> (c) Both remedies were then built by
+> `application/proposal_service.py :: _redraft_remedy`, routed by the refused
+> proposal's operation kinds, the most restrictive first: a `changeSensitivity`
+> or `restoreItem` to a migration authored by hand and applied with
+> `theurian migrate apply` once a human has reviewed it; another kind
+> `knowledge.generateMigrationDraft` carries to that tool; anything else to
+> `theurian propose`, which the own row always took; the own row's remedy has
+> since named the landed migrations its error names. Routing by the hardest
+> kind sent a mixed proposal to a route that drafts only part of it — a
+> proposal restoring then deprecating an item was told to author only the
+> `restoreItem`, which readmits the item, and an `upsertRevision` with a
+> `deprecateItem` was sent to `generateMigrationDraft`, which refuses
+> content — so the same day both rows were routed by every kind the proposal
+> carries instead: `theurian propose` when every kind is `createItem` or
+> `upsertRevision`, `generateMigrationDraft` when every kind is one it drafts,
+> and otherwise one migration authored by hand naming all of them.
+> `test_redraft_remedy.py::test_every_pair_of_kinds_is_routed_to_a_tool_that_can_draft_all_of_it`
+> calls `_redraft_remedy` for every unordered pair of the kinds in
+> `_REFUSED_TO_CONTENT_PATH`, `V1_OPERATION_KINDS` and `_REFUSED_TO_CLI`, and
+> asserts each of `theurian propose`, `knowledge.generateMigrationDraft` and
+> `theurian migrate apply` named exactly on its own route, the last with
+> "Author the " and both kinds; through `accept`,
+> `test_accept_never_introduces_a_report_row.py::test_a_withdrawal_that_restores_first_is_refused_when_it_would_take_over_an_update_row`
+> asserts the restore-first face's remedy naming `restoreItem`,
+> `deprecateItem`, "Author the " and `theurian migrate apply`. When a
+> migration the new one must replay after declared `dependsOn`, the remedy then
+> named those ids as the new one's `dependsOn`: declared by the authored
+> migration, in the `generateMigrationDraft` document, or, as
+> `theurian propose` has no option for it, edited into the drafted migration
+> file; otherwise it did not mention `dependsOn`. Since the id-order finding
+> below it names every landed migration the error names, in the same three
+> forms, whatever they declare. "Nothing has moved.", the
+> step deleting the stale proposal directory, and the absence of
+> "accept … again" are unchanged. The
+> floor remedies' fresh draft after a hand-authored migration had the same
+> loop, so `item_labels.DRAFT_AGAIN_CLAUSE` and `ACCEPT_READMISSION_REMEDY` then
+> added: "If that migration declares `dependsOn`, edit `dependsOn: [<its id>]`
+> into the new draft's migration file." Since the id-order finding below they
+> end "…, and only `dependsOn` places the new draft after it, so edit
+> `dependsOn: [<its id>]` into the new draft's migration file."
+> `test_accept_never_introduces_a_report_row.py::test_a_withdrawals_remedy_routes_to_the_migration_draft_tool_not_the_content_path`
+> refuses a staged `deprecateItem` behind a landed update declaring no
+> `dependsOn` and asserts a remedy naming `knowledge.generateMigrationDraft`
+> and `dependsOn: [<update>]`, and none of `theurian propose`, `proposeChange`
+> or "later migration id"; until the id-order finding it asserted no
+> `dependsOn`.
+> `::test_a_sensitivity_raises_remedy_routes_to_a_hand_authored_migration`
+> asserts, for a staged `changeSensitivity` raise, a remedy holding "author",
+> `changeSensitivity` and "migration" in that order within one sentence, and
+> naming neither `theurian propose` nor `generateMigrationDraft`.
+> `::test_the_remedy_names_dependson_when_the_landed_update_declares_it`, with
+> the update declaring `dependsOn`, asserts a remedy naming `dependsOn`
+> followed by the update's migration id, and `knowledge.generateMigrationDraft`.
+> `::test_a_fresh_withdrawal_without_dependson_is_refused_again_behind_a_dependent_update`
+> is the loop: a fresh deprecation whose id sorts after the update's is
+> refused with exit 1 and an error naming the update.
+> `::test_a_fresh_withdrawal_that_depends_on_the_dependent_update_is_accepted_and_takes_effect`
+> follows the remedy: drafted with `dependsOn` naming the update, the
+> deprecation is accepted with exit 0, and after `migrate apply` the item is
+> `deprecated` and the report empty. For the own row,
+> `test_accept_refuses_a_reported_upsert.py::test_the_own_row_remedy_keeps_the_content_path_for_an_upsert_and_never_says_accept_again`
+> asserts, behind a landed restore declaring no `dependsOn`, a remedy naming
+> `` `theurian propose` `` and `dependsOn: [<restore>]` and not "later
+> migration id", with no "accept" followed by "again" within one sentence
+> (until the id-order finding it asserted no `dependsOn`), and
+> `::test_the_own_row_remedy_names_dependson_when_the_landed_restore_declares_it`,
+> behind one declaring it, exit 1, an error naming the restore, and a remedy
+> naming `dependsOn` followed by the restore's migration id. No test then read
+> the authored route's `dependsOn` clause, the `restoreItem` authored route's
+> text, the `theurian propose` route for a landed migration's row, or the floor
+> remedies' `dependsOn` clause. Measured on 2026-10-03, before the id-order
+> finding, by a scratch run outside the suite, which printed the texts of that
+> time: a staged `changeSensitivity` raise behind an update declaring
+> `dependsOn` printed "… replays after `<update>`, declaring
+> `dependsOn: [<update>]`, and apply it with `theurian migrate apply` once a
+> human has reviewed it."; and after a readmission refusal printing the new
+> clause, and a `restoreItem` declaring `dependsOn`, a `theurian propose` draft
+> without it was refused with the own-row remedy naming
+> `dependsOn: [<restore>]`, while one with it edited in was accepted with exit
+> 0 and the report was empty after `migrate apply`. A content raise drafted
+> with `theurian propose` before a landed update met the revision-conflict
+> refusal first, so that run did not reach the `theurian propose` route of a
+> landed migration's row. Since the routing by every kind, three of the four
+> are read by unit tests that build the remedy directly rather than through
+> `accept`:
+> `test_redraft_remedy.py::test_dependson_names_every_landed_migration_whether_or_not_it_declares_one`
+> asserts each route's own `dependsOn` form, the authored one among them;
+> `::test_each_cli_kind_alone_is_authored_and_applied_by_a_human` asserts
+> "Author the restoreItem operation as a migration that replays after" the
+> landed id; and
+> `test_floor_refusal_remedy.py::test_every_remedy_that_says_to_draft_again_says_to_edit_dependson_in`
+> asserts the floor remedies' `dependsOn` sentence. No test reaches the
+> `theurian propose` route through a landed migration's row. This sentence
+> also said, until later on 2026-10-03, that no test reached the own row of a
+> proposal carrying more than content;
+> `test_accept_refuses_a_reported_upsert.py::test_the_own_row_remedy_authors_every_kind_of_a_proposal_carrying_a_non_content_one`
+> does: it appends a `changeOwner` to the staged document of a proposal
+> refused for its own row, and asserts exit 1, an error naming the proposal's
+> and the restore's migration ids, and a remedy holding "Author the
+> changeOwner and createItem and upsertRevision operations as a migration"
+> and not `theurian propose`. Measured on 2026-10-03 at the id-order fix by
+> wrapping `_redraft_remedy` in-process over the 20 test files, 880 tests,
+> that
+> `git grep -l -E '"propose",[[:space:]]*"accept"|propose_accept|\.accept\(|"accept",' -- packages/theurian-core/tests`
+> lists beside its support module: of 24 calls, the own-row site took the
+> `theurian propose` route 11 times and the authored route once, that test's;
+> the landed-row site took `generateMigrationDraft` 8 times, the authored route
+> 4 times, and `theurian propose` never.
+>
+> (d) The landed-row tests' shared assertion now requires an error reading
+> "from `<before>` to `<after>`" in that order, for the status, sensitivity,
+> re-attribution and restore-first faces above, and a remedy that does not
+> name `theurian propose`, since every proposal those tests refuse is a
+> migration. The descriptions above were corrected in place to the tests'
+> bodies, as were the sentences presenting a remedy as current; the remedy
+> quoted for the first widening stays as it printed then. The bold sentence on
+> the baseline was qualified in place with the `undoes` condition the second
+> widening added.
+>
+> The re-check also met a re-attribution face the second widening did not
+> name: a landed migration can become what the update overwrites because of
+> the proposal. D deprecates the item and sorts first, P is a staged
+> `restoreItem`, and X, a landed `deprecateItem` of the already-deprecated
+> item, sorts between P and U. Landed alone, X changes no predicate, so U's
+> row undoes D; with P, X withdraws the restored item, and U's row undoes X.
+> Measured on 2026-10-03 by a scratch run outside the suite: the landed-alone
+> report named D, the report with P copied into the landed set named X, and
+> `accept` exited 1 naming U. No test builds it. The docstrings of
+> `introduced_moves` and `_refuse_a_reported_upsert` now name it.
+>
+> **Later on 2026-10-03, the id-order finding.** The re-check of the fix wave
+> graded HIGH that the redraft remedies still rested on id order: they said a
+> fresh draft "gets a later migration id and replays after `<id>`", and named
+> `dependsOn` only when the landed migration declared one. Each round of the
+> replay sort takes every migration whose `dependsOn` have replayed, in id
+> order, so a landed migration whose id sorts after the drafting clock replays
+> after every fresh draft that declares no `dependsOn`, however late it is
+> drafted. A hand-chosen id, a staged id edited before `accept` and a
+> collaborator's clock running ahead each produce one. Measured on 2026-10-03
+> by a scratch run outside the suite: behind a landed `restoreItem` at
+> `SORTS_AFTER_A_DRAFT`, an id past the clock, the remedy followed as it then
+> read — a fresh `theurian propose` draft, the stale directory deleted — was
+> refused three times running, exits `[1, 1, 1]`.
+>
+> A sharper condition, naming `dependsOn` also when the landed id sorts after
+> the clock, was rejected for a rule with none. The fix wave's condition was
+> already one enumeration of where id order fails, and the re-check found a
+> case outside it; the drafting clock is read after the refusal, by whoever
+> drafts and perhaps on another machine, so no condition `accept` evaluates
+> covers it. `dependsOn: [X]` places a migration in a round after X's whatever
+> the ids. So every route of `_redraft_remedy` now says the new migration
+> replays after `<id>` "only through its `dependsOn`" and names
+> `dependsOn: [<every landed migration the error names>]` in its own form —
+> edited into the drafted file for `theurian propose`, in the document for
+> `knowledge.generateMigrationDraft`, declared by the authored migration — and
+> no remedy says a later id is enough. The draft-again constants lost their
+> condition the same way (above).
+> `test_redraft_remedy.py::test_dependson_names_every_landed_migration_whether_or_not_it_declares_one`
+> builds the remedy for every kind alone and for the two mixed proposals
+> above, behind a root migration, a dependent one and both, and asserts the
+> route's `dependsOn` form listing every id passed, no "later migration id"
+> and no "accept … again";
+> `::test_every_landed_migration_is_listed_in_the_clause_in_the_order_given`
+> asserts three ids listed in the order passed, which is not id order.
+> Through `accept`, with the landed migration at `SORTS_AFTER_A_DRAFT`,
+> `test_accept_refuses_a_reported_upsert.py::test_a_redraft_after_a_restore_whose_id_sorts_after_every_draft_lands_with_dependson`
+> (the own row) and
+> `test_accept_never_introduces_a_report_row.py::test_a_withdrawal_redrafted_behind_a_future_id_update_lands_with_dependson`
+> (a landed row) assert a remedy naming `dependsOn: [<landed id>]`, a fresh
+> draft whose id sorts before it, that draft accepted with exit 0 once
+> `dependsOn` is in it, and an empty report after `migrate apply`, the item
+> `approved` at the fresh revision in the first and `deprecated` in the
+> second. The root controls above —
+> `::test_a_withdrawals_remedy_routes_to_the_migration_draft_tool_not_the_content_path`
+> and
+> `test_accept_refuses_a_reported_upsert.py::test_the_own_row_remedy_keeps_the_content_path_for_an_upsert_and_never_says_accept_again`
+> — flipped from asserting no `dependsOn` to asserting it.
+> `test_floor_refusal_remedy.py::test_every_remedy_that_says_to_draft_again_says_to_edit_dependson_in`
+> asserts "edit `dependsOn: [<its id>]` into the new draft's migration file."
+> and no "declares" in each of its five remedies, and
+> `::test_the_draft_again_constants_carry_the_dependson_clause` the same of
+> both constants' endings. The same re-check graded MEDIUM that nothing pinned
+> which landed migrations the own-row remedy names:
+> `test_accept_refuses_a_reported_upsert.py::test_accepting_a_proposal_that_replays_before_a_landed_restore_is_refused_and_moves_nothing`
+> now asserts "replays after `<restore>`", and
+> `::test_a_redraft_after_two_dependent_restores_names_both_and_lands`, a
+> second restore declaring `dependsOn` on the first, asserts both ids in the
+> error, "replays after `<first>, <second>`" and
+> `dependsOn: [<first>, <second>]` in the remedy, and, with both edited into a
+> fresh draft, exit 0 and an empty report after `migrate apply`. Run on
+> 2026-10-03 with the package source and schemas of the tree before the fix
+> and these tests as they now are, 57 of the 61 collected cases outside the
+> "replays after `<restore>`" test failed; the four that passed are the first
+> unit test's authored routes behind a lone migration declaring `dependsOn`,
+> which the old remedy already named. All 62 pass against the fix.
+>
+> **Two premises in the review record measured false, and recorded as such.**
+> (a) That `migrate validate` never replays: it used not to, and now it
+> replays once, into a throwaway database, for the report only; its verdict
+> still does not rest on a replay. (b) That the product has a CI surface running
+> `migrate validate`: it has none. No workflow or template ships under
+> `packages/theurian-core/src/` or `plugins/` —
+> `git ls-files packages/theurian-core/src plugins | grep -i -E 'workflow|template|\.github'`
+> printed nothing on 2026-10-02 — so nothing runs it unless a project's own CI
+> does. The operator guidance is therefore two lines: run
+> `theurian migrate validate` before merging any `changeSensitivity` or
+> `deprecateItem`, and read the report `theurian migrate apply` prints after
+> it. The race is a residual detected at `migrate validate` and
+> `migrate apply`, not prevented. Once `kind` was decided by effect, the first
+> line was widened to any migration that withdraws or raises a label, naming
+> first the in-place `upsertRevision` that re-declares a revision `rejected`,
+> `superseded` or `deprecated`, or at a higher class, because it is how a
+> revision is withdrawn in place (ADR-0024 decision 5) and superseding or
+> retiring is the step T-15 names for removing a secret; then `deprecateItem`
+> and a raising `changeSensitivity`. The two named before were never the only
+> withdrawals.
+>
+> **Known cost.** A history that already holds such an upsert, the original
+> defect's victims included, is reported on every `migrate validate` and on
+> every `migrate apply` that replays it. The report is true and cannot be
+> silenced; a way to acknowledge a row is post-publication work. The replay
+> raised `migrate validate` from 7.71 s to 8.39 s at 1,000 single-item
+> migrations, median of three runs at load average 5–10, recorded at
+> `cli/commands.py :: _permissive_move_fields`. On 2026-10-02 this
+> repository's 49 migrations reported no row from `migrate validate` —
+> `::test_the_dogfood_corpus_reports_no_permissive_move` re-checks that on
+> every run — and `examples/sample-project/` reported none from `validate` or
+> `apply`.
+>
+> **The advisory's item B3**, an audit of lowerings already landed (not
+> decision 7's slice B3), is substantially discharged by the report:
+> `migrate validate --json` lists every upsert in a history that meets both
+> clauses, and filtering its rows by `kind` separates nullified withdrawals
+> (`undoes`) from lowerings no withdrawal preceded (`lowers`). That holds
+> because `kind` is decided by the effect of the field's last change (above),
+> so an in-place withdrawal by `upsertRevision` files as `undoes` and a lowering
+> after a declassification as `lowers`; decided by operation type, it filed
+> both the other way. And because that effect is judged at the floors'
+> granularity, a write between two retired statuses no longer stands in for the
+> withdrawal before it, which at value granularity filed the four faces above
+> as `lowers`. It does not list
+> what the design limit nets out inside one migration, nor a lowering made by
+> `changeSensitivity`, the sanctioned path.
+>
+> **What holds it**, read from each test's body. In
+> `tests/integration/test_update_label_inheritance.py` a drafting surface
+> updates a project whose one item carries chosen labels, and the test reads the
+> staged migration, the item row after `propose accept` and `migrate apply`, or
+> both:
+> `::test_an_update_omitting_sensitivity_leaves_the_items_sensitivity_unchanged`
+> (a `confidential` item over MCP under a raised ceiling and over the CLI, a
+> `public` one over MCP under the default ceiling and over the CLI),
+> `::test_an_update_omitting_trust_level_and_namespace_leaves_the_items_own`
+> (MCP and CLI),
+> `::test_a_candidate_update_of_a_confidential_item_leaves_it_confidential`, and
+> `::test_a_first_revision_over_mcp_gains_no_label_the_caller_did_not_name` for
+> an item id nothing created. The draft-time refusal is
+> `::test_an_mcp_update_naming_a_lower_sensitivity_is_refused_without_naming_a_label`
+> — four lowerings, each answered with text that names `changeSensitivity` and
+> no level word, and nothing written under either proposals directory — with
+> `::test_an_mcp_update_naming_an_equal_or_higher_sensitivity_drafts_it` as its
+> control, and
+> `::test_theurian_propose_naming_a_lower_sensitivity_refuses_and_writes_nothing`
+> on the CLI. Decision 6's bind is
+> `::test_naming_a_lower_sensitivity_on_a_withheld_item_answers_like_an_absent_id`:
+> eight cases — two above the default ceiling; four retired within their
+> ceiling, `deprecated` twice, `superseded` and `rejected`; two above a raised
+> ceiling — each sent with an `expectedRevision` and compared with a call about
+> an id nothing stored, on the normalised response, the SELECT statements read
+> through `open_read_connection`, and an unchanged proposals tree. It runs in
+> one corpus, the same-corpus form
+> decision 6's *Landed* entry describes, with the limit that entry states: it
+> cannot see a channel carried by collection-wide state.
+> `::test_the_same_call_on_a_corpus_without_the_item_gets_the_same_bytes` is the
+> two-corpora form of the same eight cases: each builds one project holding the
+> withheld item and one built the same way without it, sends both the same call,
+> and compares the raw responses with no normalisation, each project's
+> proposals tree unchanged.
+>
+> `tests/integration/test_create_only_item_labels.py` holds the create-only
+> case, on an item whose one migration is a `createItem` naming its
+> `sensitivity`, `trustLevel` and `namespace`.
+> `::test_a_cli_draft_for_a_create_only_item_drafts_the_labels_its_create_item_holds`
+> and
+> `::test_an_mcp_draft_omitting_labels_for_a_create_only_item_drafts_its_create_item_labels`
+> read the staged labels, and
+> `::test_a_create_only_item_keeps_its_labels_after_its_first_revision_lands`
+> the item row after `propose accept` and `migrate apply`.
+> `::test_a_cli_draft_naming_a_lower_sensitivity_for_a_create_only_item_is_refused`
+> and
+> `::test_an_mcp_draft_naming_a_lower_sensitivity_for_a_create_only_item_is_refused`
+> hold the refusal with nothing written under either proposals directory, the
+> MCP one sent with no `expectedRevision` and answered with text that names
+> `changeSensitivity` and no level word.
+> `::test_a_create_only_item_above_the_ceiling_answers_like_an_id_that_never_existed`
+> is the two-corpora comparison for a `confidential` create-only item under the
+> default ceiling, raw responses equal and both proposals trees unchanged, and
+> `::test_a_first_revision_draft_for_a_withheld_create_only_item_matches_an_absent_id`
+> sends the call without `expectedRevision` to both corpora and asserts that
+> both draft and neither answer names `changeSensitivity`.
+>
+> `tests/integration/test_accept_sensitivity_floor.py` holds accept. It refuses
+> a staged update with its `sensitivity` line removed, one with it edited to a
+> lower value (`confidential` to `internal`, and `restricted` to
+> `confidential`), and a draft whose migration sorts after a reclassification,
+> each asserting exit 1, a remedy naming `changeSensitivity`, and that nothing
+> under the proposals, migrations or knowledge directories moved; its landing
+> tests — a kept or raised label, and a draft that sorts before the
+> reclassification — are the controls. Its two `changeSensitivity` tests are
+> under *Owed* below. Each stages its proposal through `theurian propose`, and
+> what carries the refusals over to a proposal drafted elsewhere is that the
+> floor compares replayed labels and reads nothing about which surface drafted
+> it. A lowering drafted over the wire for a create-only item outside the
+> caller's view, a case only the floor refuses, is
+> `test_create_only_item_labels.py::test_accept_refuses_the_lowering_an_mcp_draft_for_a_withheld_create_only_item_stages`:
+> a `confidential` create-only item under the default ceiling, a
+> `knowledge.proposeChange` call with no `expectedRevision` that names `public`
+> or omits the sensitivity and is answered without error, a staged label that
+> is `public` where the call named it and is not `confidential` in either case,
+> and `propose accept` exiting 1 with an error that says "lower the
+> sensitivity" and names the item, nothing under the proposals, migrations or
+> knowledge directories moved, and the row still `confidential` with no
+> revision. `tests/integration/test_accept_floor_refusal_text.py`
+> holds what the refusals say.
+> `::test_accept_does_not_blame_the_landed_set_for_a_proposal_that_makes_it_replay`
+> builds the landed set that replays only with the proposal and asserts the
+> refusal says it "does not replay on its own", not "with or without this
+> proposal", with nothing moved.
+> `::test_accept_of_a_draft_made_against_a_lagging_served_state_points_at_migrate_apply`
+> drafts over MCP while a committed reclassification is unapplied, so the draft
+> carries the stale `internal`, and asserts that `accept` refuses it with a
+> remedy naming `theurian migrate apply`, with nothing moved.
+> `::test_the_lowering_remedy_names_theurian_propose_as_the_route_to_draft_again`
+> reads the redraft step: a CLI draft naming `internal`, a reclassification to
+> `confidential` sorting before it, and a refusal whose error says "lower the
+> sensitivity" and whose remedy names `theurian propose`.
+> `::test_a_landed_set_that_fails_alone_is_not_sent_to_migrate_validate` reads
+> the remedy of the replay refusal: a patched replay fails the landed set alone,
+> and the test asserts that the error carries the replay's own words, that the
+> remedy names `.theurian/migrations/` and not `migrate validate` and says that
+> `theurian migrate apply` runs the same replay, and that nothing moved. The
+> draft side's two replay refusals are
+> `test_draft_status_refusal.py::test_a_draft_over_a_landed_set_that_does_not_replay_carries_the_engines_words`,
+> on a landed set `theurian migrate validate` reports valid with exit 0 and the
+> engine refuses as a revision conflict, and
+> `::test_a_replay_that_holds_no_such_item_refuses_and_names_migrate_apply_not_validate`,
+> whose replay reader is patched to hold nothing; each asserts the remedy does
+> not name `migrate validate`, the first that it says `theurian migrate apply`
+> runs the same replay, and the second that it names `theurian migrate apply`.
+> `::test_migrate_apply_refuses_the_set_that_migrate_validate_passes_in_the_same_words`
+> holds that sentence on the draft side, on the first one's landed set:
+> `theurian migrate validate` reports it valid with exit 0, the draft is refused
+> with the engine's `Revision conflict on <item>: migration expected <revision>`,
+> and `theurian migrate apply` exits non-zero carrying the same words.
+>
+> `tests/integration/test_accept_status_floor.py` holds the status floor at
+> `accept`. The first five refusals below go through one helper that asserts
+> exit 1, a remedy naming `restoreItem`, and no file moved under the proposals,
+> migrations or knowledge directories; the two after them assert a non-zero
+> exit.
+> `::test_accept_refuses_a_proposal_that_would_readmit_a_retired_item` plants,
+> for a `deprecated`, a `superseded` and a `rejected` item, an update drafted in
+> a second project that holds the item `approved`, and asserts after
+> `migrate apply` that the row keeps its status and its revision.
+> `::test_accept_refuses_a_readmission_to_a_surfaceable_status_that_is_not_approved`
+> restates that update's status to `draft` and to `proposed`.
+> `::test_accept_refuses_the_mcp_draft_for_a_deprecated_create_only_item` runs
+> `propose accept` on a `knowledge.proposeChange` draft the tool returned
+> without error, and the row is still `deprecated` after `migrate apply`.
+> `::test_accept_refuses_a_draft_that_replays_after_a_deprecation` drafts while
+> the item is `approved`, then lands a deprecation that sorts before the draft.
+> `::test_accept_refuses_a_proposal_whose_own_restore_item_readmits_the_item`
+> restates the update to `deprecated` and appends a `restoreItem`.
+> `::test_the_refusal_names_the_item_and_both_statuses_and_the_way_to_readmit`
+> reads the error and the remedy, and
+> `::test_a_proposal_that_lowers_a_sensitivity_and_readmits_an_item_is_refused_for_both`
+> refuses both defects in one proposal with exit 1 and nothing moved, and
+> asserts that the error names both causes and the item twice and that the
+> remedy names `changeSensitivity` before `restoreItem`. The controls land:
+> `::test_accept_lands_a_draft_that_replays_before_a_deprecation` (the
+> deprecation sorts after the draft, and the row ends `deprecated` at the new
+> revision), the carve-out's
+> `::test_accept_lands_an_update_of_a_surfaceable_unapproved_item_as_approved`
+> (`draft` and `proposed`) and
+> `::test_accept_lands_the_first_revision_of_a_create_only_draft_item_as_approved`,
+> `::test_accept_lands_a_proposal_that_keeps_a_retired_item_retired`,
+> `::test_accept_lands_a_hand_written_proposal_that_deprecates_an_approved_item`
+> and `::test_the_donor_proposal_is_acceptable_where_the_item_is_not_retired`.
+> `tests/unit/test_readmission_carve_out.py::test_a_rejected_item_is_retired_for_the_floor_while_draft_and_proposed_are_not`
+> asserts that `may_surface` withholds `rejected` under
+> `include_unapproved=True`, and that `readmitted_items` reports `rejected` to
+> `approved` and reports neither `draft` nor `proposed` to `approved`.
+>
+> `tests/integration/test_draft_status_refusal.py` holds the draft side.
+> `::test_propose_refuses_to_draft_for_a_retired_item_and_writes_nothing` runs
+> `theurian propose` for a `deprecated`, a `superseded` and a `rejected` item
+> with a revision and for a `deprecated` create-only one, and asserts a non-zero
+> exit, a remedy naming `restoreItem`, and the proposals tree and `.gitignore`
+> unchanged. `::test_the_draft_refusal_is_one_constant_that_names_no_status`
+> asserts that the three statuses' answers are equal and that the error names no
+> status word.
+> `::test_okf_import_refuses_a_concept_whose_item_is_retired_locally_and_writes_nothing`
+> imports a concept for a `deprecated` create-only item and asserts it is
+> refused with nothing written, while its control
+> `::test_okf_import_still_drafts_a_concept_for_a_create_only_draft_item`
+> admits the same bundle for the item undeprecated;
+> `::test_okf_import_over_a_retired_item_with_a_revision_is_refused_as_retired`
+> imports one for a `deprecated` item with a revision and asserts one `draft`
+> refusal with nothing written under either proposals directory. The import's
+> record names only the exception class, so a spy on `ProposalService.draft`
+> reads the refusal raised, and the test asserts the messages are exactly
+> `[RETIRED_ITEM_MESSAGE]`: a missing-revision refusal, which the record would
+> show as the same `draft` refusal, fails it.
+> `::test_propose_still_drafts_for_a_surfaceable_item` and
+> `::test_propose_still_drafts_the_first_revision_of_a_create_only_draft_item`
+> are the CLI's controls. Decision 6's bind for a retired item is
+> `test_update_label_inheritance.py::test_a_draft_for_a_withheld_item_matches_an_absent_id_across_two_corpora`:
+> a `deprecated` create-only item, a `confidential` create-only one under the
+> default ceiling and a `rejected` item with a revision, each sent once with
+> `expectedRevision` and once without to a corpus holding it and to one built
+> without it. It compares the two answers, the two staged proposals trees and
+> the SELECT statements each call ran through `open_read_connection`, all
+> scrubbed of minted ids and instants, and asserts that the call without
+> `expectedRevision` drafts. `review.generateKnowledgeCandidate`'s is
+> [ADR-0033](0033-knowledge-candidate-generation.md)'s matching amendment.
+> `test_write_intent_wire.py::test_a_read_control_operation_is_refused_to_the_cli_over_the_wire`
+> holds `knowledge.generateMigrationDraft` refusing a `restoreItem`.
+>
+> **Owed before the release that ships this fix, and met:** a test of a proposal
+> that carries a `changeSensitivity` operation of its own. `accept` compares the
+> labels a replay leaves rather than the keys a document wrote, which is why it
+> refuses one.
+> `test_accept_sensitivity_floor.py::test_accept_refuses_a_proposal_whose_own_change_sensitivity_lowers_the_item`
+> appends a `changeSensitivity` to `internal` to a draft whose `upsertRevision`
+> keeps `confidential`, and asserts the same refusal, remedy and unmoved
+> directories as the refusals above. Its control,
+> `::test_accept_lands_a_proposal_whose_own_change_sensitivity_raises_the_item`,
+> appends one raising an `internal` item to `confidential` and asserts that
+> after `accept` and `migrate apply` the row holds the new revision at
+> `confidential`.
+>
+> **Not moved by this fix:** a migration written directly under
+> `.theurian/migrations/` still gets the loader's defaults for an omitted
+> label. [The migration format](../protocol/migrations.md#an-upsertrevision-re-labels-the-item)
+> says why, and what that means for a hand-written update. When the default
+> lowers the item, the permissive-move report names it as `lowers`
+> (`::test_an_upsert_omitting_sensitivity_lowers_what_the_create_item_set`).
+
 ## Context
 
 ADR-0013 settled the direction — *AI proposes, Git reviews, humans approve* — and

@@ -28,6 +28,7 @@ from fakes.clock import FrozenClock
 from fakes.ids import SeededIdGenerator
 
 from theurian.application.draft_only_proposals import DraftOnlyProposals
+from theurian.application.item_labels import CurrentItem
 from theurian.application.okf_import import (
     KIND_RELATIONS,
     ImportRefusal,
@@ -46,9 +47,9 @@ from theurian.application.proposal_service import (
     ProposalRequest,
     ProposalService,
 )
-from theurian.cli.migration_pipeline import rehearse_migration_set
-from theurian.domain.identifiers import AgentId, ItemId, MigrationId, ProjectId, RevisionId, TaskId
-from theurian.domain.migration import Migration, current_revision_in
+from theurian.cli.migration_pipeline import current_item_in, rehearse_migration_set
+from theurian.domain.identifiers import AgentId, ItemId, MigrationId, ProjectId, TaskId
+from theurian.domain.migration import Migration
 from theurian.domain.project import DEFAULT_KNOWLEDGE_DIRECTORY
 from theurian.domain.proposal import Evidence
 from theurian.domain.values import ContentHash
@@ -111,9 +112,11 @@ def paths(tmp_path: Path) -> ProjectPaths:
 
 
 def _proposal_service(paths: ProjectPaths) -> ProposalService:
-    def current_revision(item_id: ItemId) -> RevisionId | None:
+    def current_item(item_id: ItemId) -> CurrentItem | None:
         loaded = load_migrations(paths.root, paths.migrations, SCHEMAS)
-        return current_revision_in(loaded.migration_set, item_id)
+        return current_item_in(
+            loaded, item_id, paths=paths, project_id=ProjectId("demo"), clock=FrozenClock()
+        )
 
     def landed_migration(migration_id: MigrationId) -> Migration | None:
         loaded = load_migrations(paths.root, paths.migrations, SCHEMAS)
@@ -129,7 +132,7 @@ def _proposal_service(paths: ProjectPaths) -> ProposalService:
         clock=FrozenClock(),
         ids=SeededIdGenerator(),
         validate=lambda document: validate_migration_document(document, SCHEMAS),
-        current_revision=current_revision,
+        current_item=current_item,
         landed_migration=landed_migration,
         landed_migrations=landed_migrations,
         rehearse=lambda candidate: rehearse_migration_set(candidate, clock=FrozenClock()),
@@ -1083,3 +1086,121 @@ def test_the_manifest_reservation_is_positional_not_name_wide(
 
     assert not result.refusals
     assert {p.item_id.value for p in result.concepts_admitted} == {"architecture.theurian-bundle"}
+
+
+# ---------------------------------------------------------------------------
+# An import creates items; it never updates one or names a sensitivity.
+# ---------------------------------------------------------------------------
+
+
+class _RecordingSurface:
+    """The service, with every ``ProposalRequest`` it is handed kept for inspection."""
+
+    def __init__(self, inner: ProposalService) -> None:
+        self._inner = inner
+        self.requests: list[ProposalRequest] = []
+
+    def draft(self, request: ProposalRequest, *, local: bool = False) -> DraftedProposal:
+        self.requests.append(request)
+        return self._inner.draft(request, local=local)
+
+    def draft_from_document(
+        self, document: Mapping[str, object], *, evidence: Evidence, local: bool = False
+    ) -> DraftedMigration:
+        return self._inner.draft_from_document(document, evidence=evidence, local=local)
+
+
+_CONFIDENTIAL_EXPORT = _EXPORTED_CONCEPT.replace(
+    "theurian_sensitivity: internal", "theurian_sensitivity: confidential"
+)
+
+
+def _seed_create_only_item(paths: ProjectPaths, item_id: str) -> None:
+    """Land a ``createItem`` with no revision: the item exists, holding labels, revisionless."""
+    document = {
+        "apiVersion": "theurian.dev/v1",
+        "id": "01K0000000000000000000CRT1",
+        "createdAt": "2026-01-01T00:00:00+00:00",
+        "author": "seed@example.com",
+        "operations": [
+            {
+                "op": "createItem",
+                "itemId": item_id,
+                "kind": "architecture",
+                "namespace": "security",
+                "owner": "team",
+                "sensitivity": "confidential",
+            }
+        ],
+    }
+    (paths.migrations / "01K0000000000000000000CRT1-seed.yaml").write_text(
+        yaml.safe_dump(document, sort_keys=False), encoding="utf-8"
+    )
+
+
+def test_an_imported_concept_for_a_create_only_item_inherits_its_labels_and_stays_inferred(
+    tmp_path: Path, paths: ProjectPaths
+) -> None:
+    """GHSA-v2qg-23fc-7fqp: the revision-keyed existing-id refusal lets a create-only id through.
+
+    The import names no sensitivity or namespace, so the item's own must be
+    written; the concept's ``internal`` and ``backend`` must not win, and the
+    loader's ``internal`` must not apply. Trust is the exception: the import fixes
+    it at ``inferred`` by design, so it is asserted as that and not as inherited.
+    """
+    _seed_create_only_item(paths, "architecture.auth-policy")
+    bundle = tmp_path / "bundle"
+    _write(bundle, "auth-policy.md", _EXPORTED_CONCEPT)
+
+    result = _service(paths).import_bundle(_request(bundle))
+
+    assert not result.refusals
+    [admitted] = result.concepts_admitted
+    metadata = yaml.safe_load(_migration_text(admitted.proposal.directory))["operations"][1][
+        "metadata"
+    ]
+    assert (metadata["sensitivity"], metadata["namespace"], metadata["trustLevel"]) == (
+        "confidential",
+        "security",
+        "inferred",
+    )
+
+
+def test_an_imported_concept_is_drafted_as_a_first_revision_naming_no_sensitivity(
+    tmp_path: Path, paths: ProjectPaths
+) -> None:
+    """The import has no update path, but a create-only id inherits its labels all the same.
+
+    A bundle concept may carry ``theurian_sensitivity``, and a request that passed
+    it on, or a current revision to replace, would turn the import into a way to
+    rewrite an existing item's labels. Neither reaches ``.draft()``.
+    """
+    bundle = tmp_path / "bundle"
+    _write(bundle, "auth-policy.md", _CONFIDENTIAL_EXPORT)
+    surface = _RecordingSurface(_proposal_service(paths))
+
+    result = OkfImportService(drafts=DraftOnlyProposals(surface)).import_bundle(_request(bundle))
+
+    assert {p.item_id.value for p in result.concepts_admitted} == {"architecture.auth-policy"}
+    [request] = surface.requests
+    assert (request.expected_revision, request.sensitivity) == (None, None)
+
+
+def test_importing_a_concept_whose_id_already_exists_is_refused_and_drafts_nothing(
+    tmp_path: Path, paths: ProjectPaths
+) -> None:
+    """The refusal holds for a concept that names a different sensitivity than the item has.
+
+    ``test_a_relation_from_a_concept_that_refused_at_draft_never_lands`` holds the
+    refusal itself; this is the arm where the bundle's label differs from the
+    landed item's, the case an update path would have to decide.
+    """
+    _seed_existing_item(paths, "architecture.auth-policy")
+    bundle = tmp_path / "bundle"
+    _write(bundle, "auth-policy.md", _CONFIDENTIAL_EXPORT)
+
+    result = _service(paths).import_bundle(_request(bundle))
+
+    assert result.concepts_admitted == ()
+    assert [(r.kind, r.key) for r in result.refusals] == [("draft", "architecture.auth-policy")]
+    assert [p.name for p in paths.proposals.iterdir() if p.is_dir()] == []

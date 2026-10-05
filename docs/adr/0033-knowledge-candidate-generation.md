@@ -126,6 +126,90 @@ this tool.
 | `sensitivity` | **`KnowledgeCandidate.sensitivity`** (`domain/review.py`), fixed to `Sensitivity.INTERNAL` by the type's default and never set at generation — `CandidateGenerator.generate` constructs the candidate with no `sensitivity` argument — so it is never widened. There is no review-project default this tool reads; the honest form is `trust_level`'s: fixed internal by the type, never widened at generation. Not a wire field of this tool |
 | `labels`, `scope_paths`, `namespace`, `expected_revision` | as ADR-0032 decision 1 has them |
 
+> **Amended by GHSA-v2qg-23fc-7fqp (2026-10-01): the `sensitivity` row holds
+> only for an item the drafter does not find.** The item takes the sensitivity
+> of the revision an `upsertRevision` lands, so naming the candidate's
+> `internal` for an item that already exists re-labelled a `confidential` item
+> `internal` once merged. For such an item, when the drafter's lookup returns it
+> — over the wire, when the caller may see it — the drafted migration now
+> carries the item's current sensitivity, and it gets there one of two ways. On
+> an update —
+> a submission carrying `expectedRevision` — `candidate_generation._request`
+> names no sensitivity. An item a `createItem` made and no revision has touched
+> exists too, but its first revision takes no `expectedRevision`, so the
+> request does name `internal`; it names it marked as the type's default rather
+> than a statement (`ProposalRequest.sensitivity_is_default`, which only this
+> path sets), and `ProposalService.draft` drops a defaulted sensitivity for any
+> item its lookup finds. Either way the drafter writes the item's own. An id
+> nothing has created still gets `internal`, and so does an existing item
+> outside the caller's view, which the lookup answers as such an id. The
+> candidate itself is unchanged:
+> `KnowledgeCandidate.sensitivity` is still the type's `internal`, set by no
+> caller, and it reaches the migration only for an item the drafter does not
+> find. So "never widened at generation" still describes the candidate. What the
+> drafted migration carries for an item the drafter finds is the item's own
+> class, which may be wider or narrower than `internal`. For an existing item
+> outside the caller's view it carries `internal`, which can be lower than the
+> item's class, and `theurian propose accept` refuses a lowering however the
+> proposal came to carry it
+> ([ADR-0032](0032-the-write-intent-mcp-tool-surface.md)'s amendment of the
+> same date). The `trust_level` row does not move. The candidate names
+> `inferred` for an existing item too, so the migration states
+> `trustLevel: inferred` rather than inheriting the item's, and the row's
+> "*absent means not stated* does **not** apply on this path" still holds —
+> ADR-0032's amendment now scopes that phrase to an item the drafter does not
+> find. The last row follows ADR-0032 decision 1 as amended, so an omitted
+> `namespace` keeps the namespace of an item the drafter finds. The sensitivity
+> half is held by
+> `tests/integration/test_update_label_inheritance.py`:
+> `::test_a_candidate_for_a_new_item_still_names_internal`,
+> `::test_a_candidate_update_of_a_confidential_item_names_the_items_sensitivity`
+> (the staged migration) and
+> `::test_a_candidate_update_of_a_confidential_item_leaves_it_confidential` (the
+> item row after `propose accept` and `migrate apply`); and by
+> `tests/integration/test_candidate_default_flag_and_revision_precedence.py`:
+> `::test_a_candidate_for_a_confidential_item_with_no_revision_inherits_its_sensitivity`
+> (a `confidential` create-only item: the staged migration and the row after
+> landing both `confidential`) and
+> `::test_a_candidate_for_a_brand_new_id_still_drafts_internal` (a new id
+> stages `internal` while a `confidential` create-only item sits under another
+> id). At generation, an item outside the caller's view is compared with an id
+> nothing created only for a retired one:
+> `test_update_label_inheritance.py::test_a_candidate_for_a_deprecated_item_answers_like_an_id_nothing_created`
+> sends the same call for a `deprecated` item and for a never-created id, in
+> one corpus, and asserts that the two answers and the two staged label sets are
+> equal once the ids are normalised, the namespace each id's prefix gives aside.
+> `::test_accept_refuses_a_candidate_for_a_withheld_create_only_item_as_a_lowering`
+> accepts a candidate's proposal for an item above the serving ceiling: a
+> `confidential` create-only item under the default ceiling, a candidate with
+> no `expectedRevision` that stages `internal`, and `theurian propose accept`
+> exiting 1 with an error that says "lower the sensitivity" and names the item,
+> nothing under the proposals, migrations or knowledge directories moved, and
+> the row still `confidential`.
+>
+> **The same amendment, for status.** A candidate for a retired item —
+> `deprecated`, `superseded` or `rejected` — answers at generation as one for
+> an id nothing created, because the lookup answers `None` for it;
+> `::test_a_candidate_for_a_deprecated_item_answers_like_an_id_nothing_created`
+> above holds that for a `deprecated` item. The revision it drafts says
+> `status: approved`, as every drafted revision does, and
+> `theurian propose accept` refuses a proposal whose replay would readmit the
+> item ([ADR-0032](0032-the-write-intent-mcp-tool-surface.md)'s amendment of the
+> same date, its item on decision 3's reason for pulling `restoreItem`).
+> `test_update_label_inheritance.py::test_accept_refuses_a_candidate_for_a_deprecated_create_only_item_as_a_readmission`
+> accepts a candidate's proposal for a retired item: an `internal` create-only
+> item a landed migration deprecates, a candidate with no `expectedRevision`,
+> and `theurian propose accept` exiting 1 with an error that says "readmit" and
+> names the item, a remedy naming `restoreItem`, nothing moved, and the row
+> still `deprecated`.
+> `::test_accept_refuses_a_candidate_for_a_deprecated_item_with_a_revision_at_the_replay`
+> sends the same call for a `deprecated` item that has a revision, and `accept`
+> refuses it at the replay: a non-zero exit, an error carrying
+> `Revision conflict on <item>`, and nothing moved.
+> `test_accept_status_floor.py::test_accept_refuses_the_mcp_draft_for_a_deprecated_create_only_item`
+> holds the refusal for a `knowledge.proposeChange` draft, and the floor
+> compares replayed state without reading which tool drafted the proposal.
+
 `KnowledgeCandidate.generator_model` stays what its type says it is: `str | None`
 recording the caller's *declared* model, provenance rather than a control.
 Theurian runs no model (decision 1), so there is nothing for it to record on its

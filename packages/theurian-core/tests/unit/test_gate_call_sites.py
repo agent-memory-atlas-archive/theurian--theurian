@@ -222,14 +222,17 @@ DISCLOSURE_GATE = may_disclose.__name__
 #:     endpoint of a relation before publishing it
 #:     (``test_knowledge_get_will_not_hand_over_what_search_withheld`` and the
 #:     relation-visibility tests in ``tests/integration/test_mcp_tools.py``);
-#:   - the write-intent tools' caller-scoped current-revision lookup consults it so
-#:     an item this caller may not see answers ``None`` (ADR-0032 decision 6), the
+#:   - the write-intent tools' caller-scoped lookup of the current revision and labels
+#:     consults it so an item this caller may not see answers ``None`` (ADR-0032 decision 6), the
 #:     driving test being slice B4 cluster 3's;
 #:   - the withdrawal purge decides which revisions a still-published index must
 #:     stop holding (ADR-0024 decision 5) — the one *inverse* use, naming what is
 #:     non-surfaceable so the purge and the surfacing gate cannot disagree
 #:     (``test_a_withdrawal_purges_the_published_index_without_a_separate_build``
-#:     and ``test_a_restored_item_survives_the_replay_a_later_apply_forces``).
+#:     and ``test_a_restored_item_survives_the_replay_a_later_apply_forces``);
+#:   - the permissive-move report decides which replayed upserts the engine names as
+#:     readmitting an item their migration leaves readmitted at its end (GHSA-v2qg-23fc-7fqp)
+#:     (``test_permissive_move_report.py``'s race and control tests).
 STATUS_GATE_CALL_SITES = {
     ("application/index_builder.py", "IndexBuilder._build"),
     ("application/migration_engine.py", "revisions_to_purge"),
@@ -242,13 +245,27 @@ STATUS_GATE_CALL_SITES = {
     ("mcp/search.py", "_scan"),
     ("mcp/tools.py", "_relation_is_visible"),
     ("mcp/tools.py", "register.knowledge_get"),
-    # The write-intent tools' caller-scoped current-revision lookup (ADR-0032
-    # decision 6): it consults the gate so an item this caller may not see answers
+    # The write-intent tools' caller-scoped lookup of the current revision and labels
+    # (ADR-0032 decision 6): it consults the gate so an item this caller may not see answers
     # `None`, which keeps `proposeChange`'s optimistic-concurrency refusal from
     # oracling a `rejected` item's existence. The driving test that it returns
     # `None` for a withheld item and the revision for an in-view one is slice B4
     # cluster 3's.
-    ("mcp/tools.py", "register._draft_only_proposals.current_revision"),
+    ("mcp/tools.py", "register._draft_only_proposals.current_item"),
+    # The status floor: `accept` refuses a proposal whose replay moves an item from
+    # non-surfaceable to surfaceable, and the drafter refuses to write one for an
+    # item the gates withhold, but only on the CLI and OKF lookups, the operator's own
+    # unscoped view. Over MCP a withheld item answers like an absent id, so the draft
+    # succeeds and `accept` is where it is refused. Both read the same definition
+    # `may_surface` holds.
+    ("application/item_labels.py", "readmitted_items"),
+    ("application/proposal_service.py", "_refuse_a_retired_item"),
+    # The permissive-move report (GHSA-v2qg-23fc-7fqp): `MigrationEngine.apply`
+    # records each upsert that itself moves an item from non-surfaceable to
+    # surfaceable, when the upsert's migration leaves surfaceable at its end an item
+    # it found non-surfaceable. `_loosens` decides both, by the accept floor's
+    # predicate; nothing it decides changes what the store holds.
+    ("application/permissive_moves.py", "_loosens"),
 }
 
 #: A writer decides which *canonical* content a persisted artefact holds or loses; a reader,
@@ -257,22 +274,27 @@ STATUS_GATE_WRITER_SITES = {
     ("application/index_builder.py", "IndexBuilder._build"),
     ("application/migration_engine.py", "revisions_to_purge"),
     ("application/okf_export.py", "OkfExporter._walk"),
+    ("application/item_labels.py", "readmitted_items"),
 }
 STATUS_GATE_READER_SITES = {
     ("application/visibility.py", "CanonicalVisibility._may_surface"),
     ("mcp/search.py", "_scan"),
     ("mcp/tools.py", "_relation_is_visible"),
     ("mcp/tools.py", "register.knowledge_get"),
-    ("mcp/tools.py", "register._draft_only_proposals.current_revision"),
+    ("mcp/tools.py", "register._draft_only_proposals.current_item"),
+    ("application/proposal_service.py", "_refuse_a_retired_item"),
+    # A reader: it decides what the engine's apply report returns, and the upsert it
+    # reports lands whatever it decides.
+    ("application/permissive_moves.py", "_loosens"),
 }
 
 #: Every place the product consults the disclosure gate, as
 #: ``(module path under theurian/, enclosing function)``.
 #:
 #: By responsibility: the canonical-side read paths a caller can reach content through
-#: (#119 phase 2), the write-intent tools' caller-scoped current-revision lookup
-#: (ADR-0032 decision 6), the build side that decides what exists to be reached
-#: (#119 phase 3), the purge that removes it from a build already published
+#: (#119 phase 2), the write-intent tools' caller-scoped lookup of the current
+#: revision and labels (ADR-0032 decision 6), the build side that decides what exists to be
+#: reached (#119 phase 3), the purge that removes it from a build already published
 #: (#119 phase 5), and the OKF export, which decides what leaves the machine
 #: altogether (ADR-0037 decision 3), each with the test that holds it to gating:
 #:   - the ranked path's canonical re-check on the item's *current* level
@@ -334,11 +356,11 @@ DISCLOSURE_GATE_CALL_SITES = {
     ("application/visibility.py", "CanonicalVisibility._may_surface"),
     ("mcp/tools.py", "_relation_is_visible"),
     ("mcp/tools.py", "register.knowledge_get"),
-    # The write-intent tools' caller-scoped current-revision lookup (ADR-0032
-    # decision 6): the disclosure half of the same lookup, so an item above the
+    # The write-intent tools' caller-scoped lookup of the current revision and labels
+    # (ADR-0032 decision 6): the disclosure half of the same lookup, so an item above the
     # deployment's ceiling answers `None` and the concurrency refusal about it
     # cannot be told from one about an absent item. Cluster 3 drives it.
-    ("mcp/tools.py", "register._draft_only_proposals.current_revision"),
+    ("mcp/tools.py", "register._draft_only_proposals.current_item"),
 }
 
 

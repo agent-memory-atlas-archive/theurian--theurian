@@ -374,12 +374,20 @@ def _refresh(submission: CandidateSubmission) -> str:
 def _request(submission: CandidateSubmission, candidate: KnowledgeCandidate) -> ProposalRequest:
     """ADR-0033 decision 1's candidate-to-request table, applied.
 
-    ``trust_level`` and ``sensitivity`` are the *candidate's*: the first is fixed
-    by its declaration (``init=False``), so there is no wire value to read, and
-    omitting it would leave the loader asserting ``unverified`` on the written
-    migration -- a different claim about the same knowledge. ``content_type`` is
-    fixed because a generalisation has no source file whose suffix could say
-    otherwise. ``author`` is the human the migration schema requires and
+    ``trust_level`` is the *candidate's*, fixed by its declaration
+    (``init=False``), so there is no wire value to read; omitting it would let the
+    written migration claim another -- the loader's ``unverified`` for an item the
+    drafter's lookup does not return, the item's own for one it does. An update
+    names no ``sensitivity``, and is drafted only for an item the lookup returns,
+    whose sensitivity the drafter writes. A first revision names the candidate's,
+    marked ``sensitivity_is_default``: for an item the lookup returns -- one a
+    ``createItem`` made with no revision -- the drafter drops it and writes the
+    item's current one; for any other id -- one nothing created, or over MCP an
+    existing item outside the caller's view -- the candidate's is written, and
+    ``propose accept`` refuses the proposal if that lowers the item.
+    ``content_type`` is fixed because a generalisation has no source file whose
+    suffix could say otherwise.
+    ``author`` is the human the migration schema requires and
     ``evidence.agent_id`` the agent that produced the run: two values with two
     readers, neither filled from the other here.
     """
@@ -403,7 +411,10 @@ def _request(submission: CandidateSubmission, candidate: KnowledgeCandidate) -> 
         labels=submission.labels,
         scope_paths=submission.scope_paths,
         trust_level=candidate.trust_level,
-        sensitivity=candidate.sensitivity,
+        # An update leaves it out so the drafter inherits the item's own: naming
+        # ``internal`` here lowered a confidential item (GHSA-v2qg-23fc-7fqp).
+        sensitivity=None if submission.expected_revision is not None else candidate.sensitivity,
         namespace=submission.namespace,
         expected_revision=submission.expected_revision,
+        sensitivity_is_default=True,
     )

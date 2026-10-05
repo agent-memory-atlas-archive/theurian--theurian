@@ -21,13 +21,14 @@ enforce, and this import is bound by it like every other caller.
 **Nothing here reads OKF front matter as governance** (decision 1): `status`,
 `theurian_owner`, `theurian_namespace`, `theurian_trust_level` and
 `theurian_sensitivity` are never copied onto a drafted proposal.
-`ProposalRequest.namespace` stays unset (derived from the item id, never from
-`theurian_namespace`'s free text -- `domain/proposal.py::body_relative_path`'s
-own reason). `trust_level` is always :attr:`TrustLevel.INFERRED
-<theurian.domain.enums.TrustLevel.INFERRED>`, the `KnowledgeCandidate`
-precedent (`domain/review.py`) applied to a second on-ramp: no field on
-:class:`ImportedConcept` can carry any other value, so no later code path can
-raise it.
+`ProposalRequest.namespace` stays unset, never `theurian_namespace`'s free
+text (`domain/proposal.py::body_relative_path`'s own reason): the drafter
+derives it from the item id for an id nothing has created, and writes the
+item's own for a create-only id (GHSA-v2qg-23fc-7fqp). `trust_level` is
+always :attr:`TrustLevel.INFERRED <theurian.domain.enums.TrustLevel.INFERRED>`,
+the `KnowledgeCandidate` precedent (`domain/review.py`) applied to a second
+on-ramp: no field on :class:`ImportedConcept` can carry any other value, so no
+later code path can raise it.
 
 **Every path a bundle names is resolved and contained before it is read**
 (decision 6): the bundle root first (`root.resolve()`, so a bundle unpacked

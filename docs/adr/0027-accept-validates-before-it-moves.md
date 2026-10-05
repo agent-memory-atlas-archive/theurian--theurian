@@ -191,6 +191,48 @@ The pre-check has four stages, in this order:
    the stage that catches what nothing above can: the invariants the engine
    enforces only while applying.
 
+> **Amended by GHSA-v2qg-23fc-7fqp (2026-10-03). Three checks now follow stage
+> 4.** The four stages above are the decision as accepted, and they still run
+> first, in that order. Implementing
+> [ADR-0032](0032-the-write-intent-mcp-tool-surface.md)'s amendment of the same
+> name showed that surviving the pipeline is not enough: a proposal whose replay
+> lowers an existing item's sensitivity, or makes a retired item surfaceable,
+> applies cleanly. So `accept` now runs, after stage 4:
+>
+> 5. **A replay of the landed set alone**, through the same rehearsal, for the
+>    next two stages to compare against. An empty landed set is not replayed: it
+>    holds no item to compare. If the landed set fails where the union replayed,
+>    `accept` refuses, because there are no labels in place to compare.
+> 6. **The two floors** (`ProposalService._refuse_an_effective_lowering`). No
+>    item the landed set holds may end at a lower class by `DISCLOSURE_ORDER`
+>    (`item_labels.lowered_sensitivities`), and none it leaves `deprecated`,
+>    `superseded` or `rejected` may end surfaceable by
+>    `may_surface(…, include_unapproved=True)` (`item_labels.readmitted_items`).
+>    One refusal names every cause.
+> 7. **No report row introduced or re-attributed** (`_refuse_a_reported_upsert`).
+>    The union's permissive-move report may hold no row whose `(migrationId,
+>    itemId, field, undoes)` the landed-alone report lacks
+>    (`permissive_moves.introduced_moves`), so `accept` neither adds a row nor
+>    changes which migration a held row says it undoes.
+>
+> Each refuses with exit 1 and consumes nothing, as stages 1–4 do, and each
+> compares the state a replay leaves, never the operations the document names.
+> The closure argument below still holds: stages 5–7 read the pipeline's own
+> replays and add no second implementation of it. What changes is that it is
+> now a lower bound. `accept` also refuses some sets that `migrate apply` would
+> apply, and `migrate apply` reports the label moves those stages guard against,
+> in `permissiveMoves`, rather than refusing them. Stage 7 adds no replay: it
+> reads the reports of the two replays stages 4 and 5 already ran. Stage 5's
+> replay is the cost, measured twice at 1,000 items: a median 7.22 s with the
+> floors against 4.59 s with them patched out (3 runs each, in-process, measured
+> on the advisory branch, 2026-10-01), and 6.6 s against 4.2 s in the advisory's
+> review (measured on the advisory branch, 2026-10-01).
+> `test_accept_status_floor.py::test_accept_rehearses_exactly_twice_the_union_then_the_landed_set`
+> spies on the rehearsal during a successful `accept` of a CLI-drafted update
+> and asserts two calls, the first with the proposal and the second without
+> it; `::test_the_spy_sees_a_failing_landed_replay_too` makes the second call
+> raise and asserts a non-zero exit carrying the raised words.
+
 **Stages 3 and 4 overlap, deliberately, and the stage list should not be read
 as a partition.** `MigrationEngine.apply` calls `refuse_unenforceable_scope`,
 `refuse_duplicate_content_files` and `refuse_alias_item_id_collision` itself,
@@ -354,6 +396,18 @@ the conclusion, which stands.
   between examining and moving by the replay's own duration**. Saying so is
   part of the closure argument, not an aside: a reviewer who finds this
   unstated is right to call the closure incomplete.
+
+> **Amended by GHSA-v2qg-23fc-7fqp (2026-10-02). The first residue's
+> "no-replay division" now holds for `migrate validate`'s verdict, not for the
+> command.** `migrate validate` replays the whole set once, into a throwaway
+> database, for its permissive-move report
+> ([the migration format](../protocol/migrations.md#permissive-moves-are-reported-not-refused)).
+> Its `valid` verdict and exit code still do not rest on that replay, so a
+> validate-green, apply-red-forever set is still reachable as the residue says.
+> What changed is that `validate` now shows it: `permissiveMoves` is `null` and
+> `permissiveMovesUnavailable` carries the engine's own words
+> (`test_permissive_move_report.py::test_validate_on_a_set_that_does_not_replay_stays_valid_and_says_the_report_is_unavailable`).
+> Whether the verdict itself should rest on a replay stays out of scope here.
 
 ### 3. SEC-11 ships as a real control on the accept path
 

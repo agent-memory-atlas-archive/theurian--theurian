@@ -38,3 +38,20 @@ Apply pending knowledge migrations to the canonical store.
   actual revision, and the item. Two people changed the same knowledge item;
   a human has to decide which is right. Never auto-merge.
 - If validation reports a **dependency cycle**, list the cycle.
+- If `permissiveMoves` is not empty in the output of `migrate validate` or
+  `migrate apply`, show the user every row. A row is one `status` or
+  `sensitivity` that a new revision in `migrationId` loosened on `itemId`, from
+  `before` to `after`. `undoes` is the migration that, before `migrationId`,
+  last changed whether the item may be served, or its sensitivity class; a
+  move between two retired statuses (deprecated, superseded, rejected) is not
+  a change. `kind: undoes` means that change withdrew the field: it retired
+  the item or raised its sensitivity class, whatever write made it, a revision
+  re-declared in place included, and the new revision undid it — as when
+  `undoes` was merged after the update was accepted, with an id that sorts
+  before the update's.
+  `kind: lowers` means that change withdrew nothing. Say that nothing was
+  refused: the report changes no exit code. If `migrate validate` prints
+  `permissiveMovesUnavailable` instead, show it: the set did not replay, so
+  there is no report, and `migrate apply` runs the same replay. The report is
+  described in
+  [migrations.md](../../../docs/protocol/migrations.md#permissive-moves-are-reported-not-refused).

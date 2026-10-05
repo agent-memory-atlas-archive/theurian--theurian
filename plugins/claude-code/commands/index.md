@@ -46,7 +46,10 @@ to repair and the command that rebuilds after it.
   Getting a landed secret out means rotating the value and then removing it from
   the corpus by the route its channel needs — a new `upsertRevision` for a body, a
   title or a source anchor, `removeRelation` for a note on an edge,
-  `deprecateItem` for any of them — which is what the `remedy` field says. A
+  `deprecateItem` for any of them — which is what the `remedy` field says. Draft
+  the new revision with `theurian propose --expected-revision <current>`, which
+  keeps the item's labels; one written by hand must restate `sensitivity` and
+  `trustLevel`, or the item falls back to the defaults. A
   non-zero exit outside those three is not an outcome this command selects: report
   it as a failure and relay stderr.
 - `secretFindings` names the item and the channel the string sits in and quotes

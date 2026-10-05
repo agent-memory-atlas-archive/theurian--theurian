@@ -89,7 +89,10 @@ LANDED_SECRET_REMEDY: Final = (
     "Treat the value as exposed and rotate it: it is in this project's canonical state and "  # noqa: S105 - prose about a secret, not one
     "in Git history, and `knowledge.search` and `knowledge.get` already serve it whatever "
     "this index holds. Then get it out of the corpus -- supersede the revision with a new "
-    "`upsertRevision` for a finding in a body, a title or a source anchor, or drop the edge "
+    "`upsertRevision` for a finding in a body, a title or a source anchor (`theurian "
+    "propose --expected-revision <current>` drafts one that keeps the item's labels; a "
+    "hand-written one must restate `sensitivity` and `trustLevel`, or the item falls back "
+    "to the defaults), or drop the edge "
     "with `removeRelation` for one in a relation note, which superseding does not touch; "
     "retiring the item with `deprecateItem` withholds all of them -- and run `theurian "
     "migrate apply` followed by `theurian index build`, which names the items it reported, "

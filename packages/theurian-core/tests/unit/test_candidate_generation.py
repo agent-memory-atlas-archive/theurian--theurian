@@ -959,10 +959,11 @@ def test_the_proposal_request_takes_its_trust_level_from_the_candidate_never_the
 
     ``KnowledgeCandidate.trust_level`` is ``field(default=TrustLevel.INFERRED,
     init=False)``, so a candidate cannot be constructed carrying any other value.
-    ADR-0032 decision 1's "absent means not stated" -- which leaves ``trustLevel``
-    out of the migration and lets the loader apply ``unverified`` -- does **not**
-    apply on this path: a generated candidate has a trust level the type fixed,
-    and writing nothing would let the loader assert a different one.
+    ADR-0032 decision 1's "absent means not stated" -- which, for an id nothing
+    has created, leaves ``trustLevel`` out of the migration and lets the loader
+    apply ``unverified`` -- does **not** apply on this path: a generated candidate
+    has a trust level the type fixed, and writing nothing would let the loader
+    assert a different one.
     """
     drafts = _RecordingDrafts()
 

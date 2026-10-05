@@ -3653,9 +3653,11 @@ def test_validate_reports_the_application_order(project: Path) -> None:
     assert validated["applicationOrder"] == [MIGRATION_ID]
 
 
-#: Every key ``migrate validate`` publishes on the success path, and the whole
-#: of it -- read out of ``migrate_validate``'s own ``_emit`` call
-#: (``cli/commands.py``) and measured against a real invocation below.
+#: Every key ``migrate validate`` publishes on the success path of a set that
+#: replays, and the whole of it -- read out of ``migrate_validate``'s own ``_emit``
+#: call (``cli/commands.py``) and measured against a real invocation below. A set
+#: that validates but does not replay adds ``permissiveMovesUnavailable``
+#: (``test_permissive_move_report.py``).
 #:
 #: Frozen deliberately, the way ``test_schemas.py``'s
 #: :data:`PUBLISHED_RETRIEVAL_KEYS` is. This payload is a published contract a
@@ -3673,6 +3675,7 @@ _PUBLISHED_VALIDATE_KEYS = frozenset(
         "applicationOrder",
         "contentFileCount",
         "migrationCount",
+        "permissiveMoves",
         "stateHash",
         "valid",
     }

@@ -162,7 +162,9 @@ def index_build(  # noqa: PLR0911, PLR0912 -- one early return per distinguishab
     reporting it until a build finds nothing; under `warn` it is reported and the
     exit stays 0; under `off` nothing is scanned. Getting a landed secret out
     means rotating it and then removing it from the corpus by the route its
-    channel needs: a new `upsertRevision` for a body, a title or a source anchor,
+    channel needs: a new `upsertRevision` for a body, a title or a source anchor
+    (`theurian propose --expected-revision <current>` keeps the item's labels; a
+    hand-written one must restate `sensitivity` and `trustLevel`),
     `removeRelation` for a note on an edge, `deprecateItem` for any of them.
     """
     from theurian.cli.commands import (  # noqa: PLC0415 - cycle

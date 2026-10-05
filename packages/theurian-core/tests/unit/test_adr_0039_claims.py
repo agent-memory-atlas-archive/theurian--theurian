@@ -511,9 +511,9 @@ ADR_STATES: Final[dict[str, str]] = {
         and `list_relations` decode ahead of its gate (*Context*), and a known-type edge from a
         visible item to a withheld neighbour carrying an unknown member raises through
         `_relation_is_visible` → `get_item_exact_metadata` → `_item_from_row`""",
-    "owed-853-more": """The write tools' `current_revision` (`mcp/tools.py:1942`) and
-        `CanonicalVisibility.item` (`application/visibility.py:372`) decode before their gates
-        too, read from source.""",
+    "owed-853-more": """The write tools' `current_item` (`current_revision` at `f0e4d754`,
+        renamed in 0.5.1; `mcp/tools.py:1937`) and `CanonicalVisibility.item`
+        (`application/visibility.py:372`) decode before their gates too, read from source.""",
     "due-849-853": """It and #853, the check at open that keeps an older Core from decoding a
         newer build's database row by row (*Context*, *The derived store*), are both due before
         the first `kind` or `relationType` member, whichever slice adds it.""",
@@ -550,8 +550,8 @@ ADR_STATES: Final[dict[str, str]] = {
         the decode-before-gate bit #853's faces carry: `_item_from_row` decodes all three
         (`infrastructure/sqlite/store.py:1682`, `:1685`, `:1686`), and at each of those faces
         that reads an item row — `knowledge.get`, `_relation_is_visible`, the write tools'
-        `current_revision` and `CanonicalVisibility._may_surface` — that decode runs before the
-        caller's gate.""",
+        `current_item` (`current_revision` at `f0e4d754`, renamed in 0.5.1) and
+        `CanonicalVisibility._may_surface` — that decode runs before the caller's gate.""",
     # Fact half: test_adr_0039_refusals.py's two tests of the search fallback's SQL gate.
     "d8-sql-gated": """A caller that gates in SQL first is not one of them: `knowledge.search`'s
         `_scan` passes the statuses it has already resolved to `list_items_by_status`, and a

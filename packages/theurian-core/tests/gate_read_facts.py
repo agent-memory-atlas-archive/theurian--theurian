@@ -20,7 +20,7 @@ call site. This module derives the sets the records are held to.
   ``CanonicalVisibility`` and of ``ResultGate`` for search; ``_relation_is_visible``
   for the relation gate. Blind: a reader reached through a function the gate calls
   in another scope. **The list of gates is enumerated by hand, not derived.** The
-  write path's gate, ``register._draft_only_proposals.current_revision`` in
+  write path's gate, ``register._draft_only_proposals.current_item`` in
   ``mcp/tools.py``, is not modelled: it reads no body today, so no record is held
   to it, and a body read added there is not seen. #870
   (https://github.com/theurian/theurian/issues/870) owns deriving the list.

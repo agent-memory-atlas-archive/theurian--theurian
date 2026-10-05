@@ -335,7 +335,10 @@ class KnowledgeCandidate:
     trust_level: TrustLevel = field(default=TrustLevel.INFERRED, init=False)
     #: The candidate generator sets no ``sensitivity``, so a generated candidate is
     #: always the type default ``INTERNAL`` and never widened at generation. There is
-    #: no review-project default; this is not read from one.
+    #: no review-project default; this is not read from one. It reaches the drafted
+    #: migration for a new item and, over MCP, for an existing one outside the
+    #: caller's view, where ``propose accept`` refuses it if it is a lowering. Any
+    #: other existing item keeps its own sensitivity.
     sensitivity: Sensitivity = Sensitivity.INTERNAL
 
     def __post_init__(self) -> None:

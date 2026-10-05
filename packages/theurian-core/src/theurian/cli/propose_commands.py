@@ -37,7 +37,7 @@ from theurian.application.proposal_service import (
     ProposalService,
 )
 from theurian.cli.context import CommandContext, schema_root
-from theurian.cli.migration_pipeline import rehearse_migration_set
+from theurian.cli.migration_pipeline import current_item_in, rehearse_migration_set
 from theurian.domain.enums import KnowledgeKind, Sensitivity, TrustLevel
 from theurian.domain.errors import TheurianError
 from theurian.domain.identifiers import AgentId, ItemId, ProposalId, RevisionId, TaskId
@@ -96,7 +96,10 @@ _REQUIRED: Final = (
 )
 
 propose_app = typer.Typer(
-    help="Draft a knowledge change as a reviewable proposal, or accept one.",
+    help="Draft a knowledge change as a reviewable proposal, or accept one.\n\n"
+    "A draft for a retired item -- deprecated, superseded or rejected -- is refused "
+    "with exit 2 and writes nothing: bringing the item back is a hand-written "
+    "`restoreItem` migration, not a proposal.",
     no_args_is_help=True,
 )
 
@@ -165,13 +168,17 @@ def propose_draft(  # noqa: PLR0913 -- one option per migration field, all keywo
     ] = None,
     namespace: Annotated[
         str | None,
-        typer.Option("--namespace", help="Namespace to record. Defaults to the item id's own."),
+        typer.Option(
+            "--namespace",
+            help="Namespace to record. Omitted, an existing item keeps its own and a new item "
+            "takes its id's.",
+        ),
     ] = None,
     expected_revision: Annotated[
         str | None,
         typer.Option(
             "--expected-revision",
-            help="Current revision id of an existing item. Pass it to propose an update.",
+            help="The item's current revision id; required exactly when it has one.",
         ),
     ] = None,
     source_provider: Annotated[
@@ -201,15 +208,18 @@ def propose_draft(  # noqa: PLR0913 -- one option per migration field, all keywo
         TrustLevel | None,
         typer.Option(
             "--trust-level",
-            help="How much scrutiny this content has had. Omitted, the revision loads as "
-            "'unverified' -- honest for an agent draft, wrong for reviewed knowledge.",
+            help="How much scrutiny this content has had. Omitted, an existing item keeps its "
+            "level and a new item loads as 'unverified' -- honest for an agent draft, wrong "
+            "for reviewed knowledge.",
         ),
     ] = None,
     sensitivity: Annotated[
         Sensitivity | None,
         typer.Option(
             "--sensitivity",
-            help="Disclosure class. Omitted, the revision loads as 'internal'.",
+            help="Disclosure class. Omitted, an existing item keeps its class and a new item "
+            "loads as 'internal'. A draft for an existing item cannot name a lower class "
+            "than its own.",
         ),
     ] = None,
     scope_path: Annotated[
@@ -273,12 +283,13 @@ def propose_draft(  # noqa: PLR0913 -- one option per migration field, all keywo
     either: an update that does not name the revision it replaces is the race
     #210 describes.
 
-    An update to an item that already exists **must** carry ``--expected-revision``.
-    The generator derives the item's current revision from the approved migration
-    set -- which is the canonical state -- and refuses a draft that would produce
-    an unguarded update, rather than emitting one ``theurian propose accept``
-    would then refuse for conflicting with the revision in place (#210).
-    ``--expected-revision`` on an item that does not exist yet is refused for the
+    An update to an item that has a revision **must** carry
+    ``--expected-revision``, which names that revision. The generator derives the
+    item's current revision from the approved migration set -- which is the
+    canonical state -- and refuses a draft that would produce an unguarded update,
+    rather than emitting one ``theurian propose accept`` would then refuse for
+    conflicting with the revision in place (#210).
+    ``--expected-revision`` on an item with no current revision is refused for the
     same reason: a first revision has nothing to replace.
     """
     provided: dict[str, object] = {
@@ -387,8 +398,24 @@ def propose_accept(
     survives the pipeline ``theurian migrate apply`` runs -- the published
     schema, the whole-set guards, and a dry replay against a throwaway store
     that catches the invariants only applying can check, a revision's source
-    anchor and a reused revision id among them. If either refuses, the
-    acceptance is refused and **nothing is consumed**: the proposal directory is
+    anchor and a reused revision id among them -- and that the replay leaves no
+    item less sensitive, and no deprecated, superseded or rejected item
+    surfaceable, than the landed migrations alone leave it -- and, those
+    passing, that accepting it neither adds a row to the replay's
+    ``permissiveMoves`` report that the landed migrations' own does not, nor
+    changes which migration a row the landed report holds says it undoes: as
+    when this proposal's migration replays before a landed one that re-sets
+    what its revision loosened, or a landed migration that replays after this
+    proposal's undoes what it sets. The cure is a new migration that replays
+    after the landed one, routed by every operation the proposal carries: a
+    fresh draft with ``theurian propose`` when all of them are content, with
+    ``knowledge.generateMigrationDraft`` when all of them are operations it
+    drafts, and otherwise one migration carrying all of them, authored by hand
+    and applied with ``theurian migrate apply``; the remedy names which. It
+    also names the ``dependsOn`` the new migration needs, whatever the landed
+    one declares: a fresh draft's id need not sort after the landed one's, and
+    only ``dependsOn`` places the new migration after it. If any of
+    these refuses, the acceptance is refused and **nothing is consumed**: the proposal directory is
     left exactly as it was, so the change can be corrected and accepted rather
     than re-drafted from nothing (ADR-0027, #307).
 
@@ -422,8 +449,15 @@ def propose_accept(
     migration's own bytes, its filename or a body's path -- that appears to carry a
     secret while the policy is
     ``block``, a ``.theurian/config.yaml`` that cannot be read or names a
-    ``security.secretScan`` value this build does not recognise, or a migration
-    that does not satisfy the schema or would not apply; 2 the id is not a ULID; 4 the
+    ``security.secretScan`` value this build does not recognise, a migration
+    that does not satisfy the schema or would not apply, one whose replay
+    would lower an item's sensitivity or readmit a retired item, one whose
+    acceptance would add a row to the report ``theurian migrate validate``
+    prints, or change which migration a row there says it undoes -- its own
+    revision's, or a landed migration's undoing what this proposal sets --
+    where the fix is a new migration replaying after the landed one, or a landed
+    migration set that replays with this proposal but not on its own, where the
+    fix is in ``.theurian/migrations/``; 2 the id is not a ULID; 4 the
     project's knowledge state refuses the move -- this proposal was accepted
     before, that migration id is already in ``.theurian/migrations/``, or the
     approved migration set does not resolve or does not apply (it is unreadable,
@@ -617,7 +651,8 @@ _ACCEPT_STEPS: Final = (
     "This acceptance already proved the set applies: the migration and every one in "
     "`.theurian/migrations/` were replayed together, source anchors and revision-id "
     "reuse included. `theurian migrate validate --json` re-checks schema conformance "
-    "and the whole-set guards, and does not replay.",
+    "and the whole-set guards; its verdict does not depend on a replay, and its "
+    "`permissiveMoves` report replays the set in a throwaway database.",
     "Once it has merged: `theurian migrate apply --json`, then "
     "`theurian index build --json`, or the knowledge just approved is not searchable.",
 )
@@ -954,9 +989,10 @@ def _read_body(path: Path, *, as_json: bool) -> tuple[str, MediaType]:
 def _service(context: CommandContext) -> ProposalService:
     """Wire the service. The schema check is an adapter, injected (ADR-0003).
 
-    The current-revision lookup reads the approved migration set, which is the
-    canonical state (FR-K4), so the generator can require ``--expected-revision``
-    on a known item without opening the state database.
+    The current-item lookup reads the approved migration set, which is the
+    canonical state (FR-K4), and never opens the state database: an item no
+    migration creates answers without a replay, and any other costs one replay
+    into a throwaway store, where its labels are read (``current_item_in``).
     """
     schemas = schema_root()
     migrations = context.loaded.migration_set
@@ -966,7 +1002,19 @@ def _service(context: CommandContext) -> ProposalService:
         clock=context.clock,
         ids=context.ids,
         validate=lambda document: validate_migration_document(document, schemas),
+        # `current_item_in` replays the landed set into a throwaway store, about
+        # 0.023 s on this repository's own corpus and 0.286 s at 1,000 items
+        # (measured on the review of GHSA-v2qg-23fc-7fqp). `current_revision` decides a
+        # missing or stale `expectedRevision` before that cost; its refusal then pays
+        # one replay, to give a retired item the retired refusal first.
         current_revision=lambda item_id: current_revision_in(migrations, item_id),
+        current_item=lambda item_id: current_item_in(
+            context.loaded,
+            item_id,
+            project_id=context.project_id,
+            paths=context.paths,
+            clock=context.clock,
+        ),
         # The landed-migration lookup is this same MigrationSet's own `_by_id`
         # (keyed by inner id), so `propose accept` cannot disagree with
         # `migrate validate`/`apply` about what is in place (ADR-0003, #253).
@@ -1004,11 +1052,11 @@ def _drafted_payload(
         "contentFile": drafted.content_file,
         "contentSha256": drafted.content_sha256.value,
         "bodyDestination": _relative(drafted.body_destination, root),
-        "nextSteps": _draft_steps(inputs),
+        "nextSteps": _draft_steps(drafted, inputs),
     }
 
 
-def _draft_steps(inputs: _Inputs) -> list[str]:
+def _draft_steps(drafted: DraftedProposal, inputs: _Inputs) -> list[str]:
     """The next-steps list, with the governed-defaults warning first when owed.
 
     #249: an omitted ``--trust-level`` or ``--sensitivity`` is not an error --
@@ -1021,13 +1069,19 @@ def _draft_steps(inputs: _Inputs) -> list[str]:
     keeps a reviewed, public ADR from acquiring ``unverified``/``internal`` with
     nothing telling the caller.
 
+    The warning keys on what the drafted migration names, not on whether
+    ``--expected-revision`` was passed: for an item that exists, the drafter
+    writes the item's current label for each one left out, so nothing falls back
+    to a schema default (GHSA-v2qg-23fc-7fqp) -- including the first revision of
+    an item created with no revision, which takes no ``--expected-revision``.
+
     The ``--local`` step follows the same warning-first ordering and for the same
     reason: it says what a reader would otherwise have to infer from a path.
     """
     leading = [
         step
         for step in (
-            _governed_defaults_note(inputs.trust_level, inputs.sensitivity),
+            _governed_defaults_note(drafted.trust_level, drafted.sensitivity),
             _LOCAL_DRAFT_STEP if inputs.local else None,
         )
         if step is not None
@@ -1040,12 +1094,13 @@ def _governed_defaults_note(
 ) -> str | None:
     """Name the governed fields left unset and the default each will publish.
 
-    ``None`` when both were given: there is then no default to warn about. The
-    defaults are read from :data:`DEFAULT_TRUST_LEVEL` and
-    :data:`DEFAULT_SENSITIVITY` -- the same constants the loader's ``.get(...)``
-    fallbacks apply when a migration omits these keys -- so the value named here
-    and the value the revision will publish are one definition, not two that
-    happen to agree.
+    ``None`` when the drafted migration names both: there is then no default to
+    warn about. The arguments are the drafted migration's labels, after
+    inheritance (:func:`_draft_steps`), not the options as typed. The defaults
+    are read from :data:`DEFAULT_TRUST_LEVEL` and :data:`DEFAULT_SENSITIVITY` --
+    the same constants the loader's ``.get(...)`` fallbacks apply when a
+    migration omits these keys -- so the value named here and the value the
+    revision will publish are one definition, not two that happen to agree.
     """
     omitted = [
         (field, default, option)

@@ -22,6 +22,7 @@ from typing import Final, Protocol
 
 from theurian.application.migration_alias_guards import refuse_alias_item_id_collision
 from theurian.application.migration_body_guards import refuse_duplicate_content_files
+from theurian.application.permissive_moves import LabelWriters, PermissiveMove
 from theurian.domain.enums import (
     KnowledgeStatus,
     RelationType,
@@ -159,6 +160,10 @@ class ApplyReport:
     #: cancel a deprecation, a reject-in-place withdraw an item whose revision id
     #: never changed, and a full replay idempotent.
     withdrawn_candidates: list[WithdrawalCandidate] = field(default_factory=list)
+    #: The labels an upsert this apply ran loosened, on items the upsert's migration left
+    #: looser at its end than it found them, in replay order (GHSA-v2qg-23fc-7fqp).
+    #: Reported, never refused.
+    permissive_moves: list[PermissiveMove] = field(default_factory=list)
 
     @property
     def changed(self) -> bool:
@@ -451,9 +456,10 @@ class MigrationEngine:
         # set by the flavor-aware `revisions_to_purge`, never accumulated per
         # operation.
         affected: set[ItemId] = set()
+        labels = LabelWriters()
         for migration in plan.pending:
             for operation in migration.operations:
-                self._apply_operation(writer, project_id, migration, operation)
+                self._apply_operation(writer, project_id, migration, operation, labels)
                 report.operations_applied += 1
                 item_id = _withdrawal_affected_item(operation)
                 if item_id is not None:
@@ -467,6 +473,7 @@ class MigrationEngine:
             report.applied.append(migration.migration_id)
 
         report.withdrawn_candidates = _gather_withdrawal_candidates(writer, project_id, affected)
+        report.permissive_moves = list(labels.moves)
         return report
 
     def _apply_operation(  # noqa: PLR0912 -- a flat dispatch over 14 closed operations
@@ -475,14 +482,21 @@ class MigrationEngine:
         project_id: ProjectId,
         migration: Migration,
         operation: Operation,
+        labels: LabelWriters,
     ) -> None:
         match operation:
             case CreateItem():
-                self._create_item(writer, project_id, operation)
+                created = self._create_item(writer, project_id, operation)
+                if created is not None:
+                    labels.wrote(migration.migration_id, operation, prior=None, landed=created)
             case UpsertRevision():
-                self._upsert_revision(writer, project_id, migration, operation)
+                prior, landed = self._upsert_revision(writer, project_id, migration, operation)
+                labels.upserted(migration.migration_id, prior, landed)
             case DeprecateItem():
-                self._set_status(writer, project_id, operation.item_id, KnowledgeStatus.DEPRECATED)
+                prior, landed = self._set_status(
+                    writer, project_id, operation.item_id, KnowledgeStatus.DEPRECATED
+                )
+                labels.wrote(migration.migration_id, operation, prior=prior, landed=landed)
                 if operation.superseded_by is not None:
                     writer.add_relation(
                         KnowledgeRelation(
@@ -495,7 +509,10 @@ class MigrationEngine:
                         )
                     )
             case RestoreItem():
-                self._set_status(writer, project_id, operation.item_id, KnowledgeStatus.APPROVED)
+                prior, landed = self._set_status(
+                    writer, project_id, operation.item_id, KnowledgeStatus.APPROVED
+                )
+                labels.wrote(migration.migration_id, operation, prior=prior, landed=landed)
             case AddRelation():
                 writer.add_relation(
                     KnowledgeRelation(
@@ -530,7 +547,9 @@ class MigrationEngine:
                 writer.remove_alias(project_id, operation.alias)
             case ChangeSensitivity():
                 item = self._require_item(writer, project_id, operation.item_id, migration)
-                writer.put_item(_replace_item(item, sensitivity=operation.sensitivity))
+                landed = _replace_item(item, sensitivity=operation.sensitivity)
+                writer.put_item(landed)
+                labels.wrote(migration.migration_id, operation, prior=item, landed=landed)
             case ChangeOwner():
                 item = self._require_item(writer, project_id, operation.item_id, migration)
                 writer.put_item(_replace_item(item, owner=operation.owner))
@@ -562,28 +581,29 @@ class MigrationEngine:
 
     def _create_item(
         self, writer: MigrationWriter, project_id: ProjectId, operation: CreateItem
-    ) -> None:
+    ) -> KnowledgeItem | None:
+        """The item created, or ``None`` when it already existed."""
         existing = writer.get_item(project_id, operation.item_id)
         if existing is not None:
             # Not an error: re-applying a migration must be a no-op (FR-K8), and
             # the create is the first thing a re-run would repeat.
-            return
+            return None
 
         now = self._clock.now()
-        writer.put_item(
-            KnowledgeItem(
-                item_id=operation.item_id,
-                project_id=project_id,
-                namespace=operation.namespace,
-                kind=operation.kind_,
-                status=KnowledgeStatus.DRAFT,
-                current_revision_id=None,
-                owner=operation.owner,
-                trust_level=operation.trust_level,
-                sensitivity=operation.sensitivity,
-                validity=ValidityPeriod(valid_from=now),
-            )
+        created = KnowledgeItem(
+            item_id=operation.item_id,
+            project_id=project_id,
+            namespace=operation.namespace,
+            kind=operation.kind_,
+            status=KnowledgeStatus.DRAFT,
+            current_revision_id=None,
+            owner=operation.owner,
+            trust_level=operation.trust_level,
+            sensitivity=operation.sensitivity,
+            validity=ValidityPeriod(valid_from=now),
         )
+        writer.put_item(created)
+        return created
 
     def _upsert_revision(
         self,
@@ -591,9 +611,10 @@ class MigrationEngine:
         project_id: ProjectId,
         migration: Migration,
         operation: UpsertRevision,
-    ) -> None:
-        item = writer.get_item(project_id, operation.item_id)
-        self._check_expected_revision(item, operation)
+    ) -> tuple[KnowledgeItem | None, KnowledgeItem]:
+        """Land the revision; return the item as it was before, and as it is now."""
+        prior = writer.get_item(project_id, operation.item_id)
+        self._check_expected_revision(prior, operation)
 
         if operation.content_sha256 is None:  # pragma: no cover - loader always sets it
             raise MigrationError(
@@ -637,6 +658,7 @@ class MigrationEngine:
         )
         writer.append_revision(revision)
 
+        item = prior
         if item is None:
             item = KnowledgeItem(
                 item_id=operation.item_id,
@@ -650,7 +672,9 @@ class MigrationEngine:
                 sensitivity=metadata.sensitivity,
                 validity=ValidityPeriod(valid_from=valid_from),
             )
-        writer.put_item(item.with_revision(revision))
+        landed = item.with_revision(revision)
+        writer.put_item(landed)
+        return prior, landed
 
     @staticmethod
     def _check_expected_revision(item: KnowledgeItem | None, operation: UpsertRevision) -> None:
@@ -679,11 +703,14 @@ class MigrationEngine:
         project_id: ProjectId,
         item_id: ItemId,
         status: KnowledgeStatus,
-    ) -> None:
+    ) -> tuple[KnowledgeItem, KnowledgeItem]:
+        """Set ``status``; return the item as it was before, and as it is now."""
         item = writer.get_item(project_id, item_id)
         if item is None:
             raise MigrationError(f"Cannot change the status of unknown item {item_id}")
-        writer.put_item(item.with_status(status))
+        landed = item.with_status(status)
+        writer.put_item(landed)
+        return item, landed
 
     @staticmethod
     def _require_item(

@@ -248,11 +248,24 @@ def may_surface(status: KnowledgeStatus, *, include_unapproved: bool) -> bool:
       (ADR-0024 decision 5), the one *inverse* use -- it names what is
       non-surfaceable so the purge and the surfacing gate cannot disagree about
       what is withheld;
-    - ``mcp/tools.py :: register._draft_only_proposals.current_revision``, the
-      write-intent tools' caller-scoped current-revision lookup, consults it so
-      an item this caller may not see answers ``None`` and
+    - ``mcp/tools.py :: register._draft_only_proposals.current_item``, the
+      write-intent tools' caller-scoped lookup of an item's current revision and
+      labels, consults it so an item this caller may not see answers ``None`` and
       ``knowledge.proposeChange``'s optimistic-concurrency refusal cannot
-      oracle its existence (ADR-0032 decision 6).
+      oracle its existence (ADR-0032 decision 6);
+    - ``application/item_labels.py :: readmitted_items``, the accept floor,
+      decides what the migration set gains: it names each item a proposal would
+      move from non-surfaceable to surfaceable, and ``accept`` refuses that
+      proposal, so the floor and the gates read one definition of "served";
+    - ``application/proposal_service.py :: _refuse_a_retired_item`` refuses a draft
+      for an item the gates withhold, before anything is written;
+    - ``application/permissive_moves.py :: _loosens`` decides, for the engine's
+      apply report, whether a replayed upsert itself moved an item from
+      non-surfaceable to surfaceable, and whether the upsert's migration, at its
+      end, leaves surfaceable an item it found non-surfaceable -- the accept
+      floor's predicate for both (GHSA-v2qg-23fc-7fqp); the upsert lands either
+      way. Read the other way round, it decides whether a label write withdrew
+      the item, which is a row's ``kind``.
 
     The builder used to inline the two comparisons instead of calling this,
     which is one copy of a security rule too many -- ``knowledge.get`` having
@@ -300,11 +313,11 @@ def may_disclose(sensitivity: Sensitivity, *, visible: frozenset[Sensitivity]) -
       item it hands over by id;
     - ``mcp/tools.py :: _relation_is_visible``, the per-edge gate on each endpoint
       of a relation before it is published;
-    - ``mcp/tools.py :: register._draft_only_proposals.current_revision``, the
-      write-intent tools' caller-scoped current-revision lookup, which consults it
-      so an item above this deployment's ceiling answers ``None`` and the
-      concurrency refusal about it cannot be told from one about an absent item
-      (ADR-0032 decision 6);
+    - ``mcp/tools.py :: register._draft_only_proposals.current_item``, the
+      write-intent tools' caller-scoped lookup of an item's current revision and
+      labels, which consults it so an item above this deployment's ceiling answers
+      ``None`` and the concurrency refusal about it cannot be told from one about
+      an absent item (ADR-0032 decision 6);
     - ``application/index_builder.py :: IndexBuilder._build``, the index builder,
       which decides what is *written* rather than what is shown;
     - ``application/migration_engine.py :: revisions_to_purge``, the withdrawal

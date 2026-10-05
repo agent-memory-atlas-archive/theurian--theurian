@@ -44,21 +44,21 @@ from theurian.application.candidate_generation import (
     ReadEvidenceRecord,
 )
 from theurian.application.draft_only_proposals import DraftOnlyProposals
+from theurian.application.item_labels import CurrentItem
 from theurian.application.project_service import ProjectPaths, initialize_project
 from theurian.application.proposal_service import ProposalService
 from theurian.application.review_landing_gate import ReviewRecordPayload
-from theurian.cli.migration_pipeline import rehearse_migration_set
+from theurian.cli.migration_pipeline import current_item_in, rehearse_migration_set
 from theurian.domain.enums import KnowledgeKind, ReviewCommentCategory, ReviewThreadState
 from theurian.domain.identifiers import (
     AgentId,
     ItemId,
     MigrationId,
     ProjectId,
-    RevisionId,
     TaskId,
 )
 from theurian.domain.knowledge import SourceAnchor
-from theurian.domain.migration import Migration, current_revision_in
+from theurian.domain.migration import Migration
 from theurian.domain.project import DEFAULT_KNOWLEDGE_DIRECTORY
 from theurian.domain.proposal import Evidence
 from theurian.domain.review import (
@@ -223,9 +223,11 @@ def paths(tmp_path: Path) -> ProjectPaths:
 
 
 def _proposal_service(paths: ProjectPaths) -> ProposalService:
-    def current_revision(item_id: ItemId) -> RevisionId | None:
+    def current_item(item_id: ItemId) -> CurrentItem | None:
         loaded = load_migrations(paths.root, paths.migrations, SCHEMAS)
-        return current_revision_in(loaded.migration_set, item_id)
+        return current_item_in(
+            loaded, item_id, paths=paths, project_id=PROJECT, clock=FrozenClock()
+        )
 
     def landed_migration(migration_id: MigrationId) -> Migration | None:
         loaded = load_migrations(paths.root, paths.migrations, SCHEMAS)
@@ -241,7 +243,7 @@ def _proposal_service(paths: ProjectPaths) -> ProposalService:
         clock=FrozenClock(),
         ids=SeededIdGenerator(),
         validate=lambda document: validate_migration_document(document, SCHEMAS),
-        current_revision=current_revision,
+        current_item=current_item,
         landed_migration=landed_migration,
         landed_migrations=landed_migrations,
         rehearse=lambda candidate: rehearse_migration_set(candidate, clock=FrozenClock()),
@@ -359,8 +361,9 @@ def test_the_written_migration_records_the_candidates_inferred_trust_level(
 
     ``KnowledgeCandidate.trust_level`` is ``init=False`` and fixed, so the
     in-memory value cannot be wrong; what can be wrong is the mapping onto the
-    migration, where ADR-0032 decision 1's "absent means not stated" would leave
-    the key out and let the loader apply ``unverified``. That is a quieter defect
+    migration, where ADR-0032 decision 1's "absent means not stated" would, on a
+    first revision like this one, leave the key out and let the loader apply
+    ``unverified``. That is a quieter defect
     than a wrong value: nothing refuses, and the knowledge claims less trust than
     the candidate that produced it -- which is the claim a reviewer reads when
     deciding whether to merge.

@@ -16,6 +16,7 @@ import yaml
 from fakes.clock import FrozenClock
 from fakes.ids import SeededIdGenerator
 
+from theurian.application.item_labels import CurrentItem
 from theurian.application.project_service import ProjectPaths, initialize_project
 from theurian.application.proposal_service import (
     DraftedMigration,
@@ -23,10 +24,10 @@ from theurian.application.proposal_service import (
     ProposalError,
     ProposalService,
 )
-from theurian.cli.migration_pipeline import rehearse_migration_set
+from theurian.cli.migration_pipeline import current_item_in, rehearse_migration_set
 from theurian.domain.errors import MigrationError
-from theurian.domain.identifiers import AgentId, ItemId, MigrationId, ProjectId, RevisionId, TaskId
-from theurian.domain.migration import Migration, OperationKind, current_revision_in
+from theurian.domain.identifiers import AgentId, ItemId, MigrationId, ProjectId, TaskId
+from theurian.domain.migration import Migration, OperationKind
 from theurian.domain.project import DEFAULT_KNOWLEDGE_DIRECTORY
 from theurian.domain.proposal import Evidence, is_migration_file_name
 from theurian.infrastructure.filesystem.migration_loader import (
@@ -57,9 +58,11 @@ def paths(tmp_path: Path) -> Iterator[ProjectPaths]:
 def _service(
     paths: ProjectPaths, *, validate: MigrationDocumentValidator | None = None
 ) -> ProposalService:
-    def current_revision(item_id: ItemId) -> RevisionId | None:
+    def current_item(item_id: ItemId) -> CurrentItem | None:
         loaded = load_migrations(paths.root, paths.migrations, SCHEMAS)
-        return current_revision_in(loaded.migration_set, item_id)
+        return current_item_in(
+            loaded, item_id, paths=paths, project_id=ProjectId("demo"), clock=FrozenClock()
+        )
 
     def landed_migration(migration_id: MigrationId) -> Migration | None:
         loaded = load_migrations(paths.root, paths.migrations, SCHEMAS)
@@ -75,7 +78,7 @@ def _service(
         clock=FrozenClock(),
         ids=SeededIdGenerator(),
         validate=validate or (lambda document: validate_migration_document(document, SCHEMAS)),
-        current_revision=current_revision,
+        current_item=current_item,
         landed_migration=landed_migration,
         landed_migrations=landed_migrations,
         rehearse=lambda candidate: rehearse_migration_set(candidate, clock=FrozenClock()),

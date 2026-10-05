@@ -61,7 +61,7 @@ from theurian.application.project_service import (
 )
 from theurian.application.proposal_service import ProposalService
 from theurian.cli.context import CommandContext, schema_root
-from theurian.cli.migration_pipeline import rehearse_migration_set
+from theurian.cli.migration_pipeline import current_item_in, rehearse_migration_set
 from theurian.domain.errors import TheurianError
 from theurian.domain.identifiers import AgentId, TaskId
 from theurian.domain.migration import current_revision_in
@@ -362,7 +362,21 @@ def _service(context: CommandContext) -> OkfImportService:
         clock=context.clock,
         ids=context.ids,
         validate=lambda document: validate_migration_document(document, schemas),
+        # `current_item_in` replays the landed set into a throwaway store, about
+        # 0.023 s on this repository's own corpus and 0.286 s at 1,000 items
+        # (measured on the review of GHSA-v2qg-23fc-7fqp). `current_revision` decides a
+        # missing or stale `expectedRevision` before that cost; its refusal then pays
+        # one replay, to give a retired item the retired refusal first.
+        # `MAX_UPSERT_OPERATIONS` (250) bounds an OKF bundle at about 125 colliding
+        # concepts, each of which pays one replay.
         current_revision=lambda item_id: current_revision_in(migrations, item_id),
+        current_item=lambda item_id: current_item_in(
+            context.loaded,
+            item_id,
+            project_id=context.project_id,
+            paths=context.paths,
+            clock=context.clock,
+        ),
         landed_migration=migrations.get,
         landed_migrations=lambda: migrations,
         rehearse=lambda candidate: rehearse_migration_set(candidate, clock=context.clock),
