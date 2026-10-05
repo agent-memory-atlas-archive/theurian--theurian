@@ -1,0 +1,33 @@
+#!/bin/sh
+# Opt-in, per clone: cp tools/hooks/pre-push "$(git rev-parse --git-common-dir)/hooks/pre-push"
+# (a hooks directory inside the tree is absent on branches that predate it, and git then runs no hook).
+# Runs the CI `pr-size` check locally, for clones where CI does not run. A tree
+# without tools/pr_size.py fails the push.
+base=${PR_SIZE_BASE:-origin/main}
+# Name the unresolved ref instead of letting pr_size.py fail with a traceback.
+if ! git rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
+    echo "pre-push: base ref '$base' does not resolve; set PR_SIZE_BASE" >&2
+    exit 1
+fi
+# A sync of the base branch is not a change under review.
+full=$(git rev-parse --symbolic-full-name "$base")
+skip=
+case $full in
+    refs/heads/*) skip=$full ;;
+    refs/remotes/*) skip=refs/heads/${full#refs/remotes/*/} ;;
+esac
+status=0
+# Branches are keyed on the remote ref: the local field is whatever was typed (HEAD, a sha).
+while read -r _ local_sha remote_ref _; do
+    case $remote_ref in
+        "$skip") continue ;;
+        refs/heads/*) ;;
+        *) continue ;;
+    esac
+    case $local_sha in
+        *[!0]*) ;;
+        *) continue ;;
+    esac
+    python3 tools/pr_size.py --base "$base" --head "$local_sha" || status=1
+done
+exit $status
