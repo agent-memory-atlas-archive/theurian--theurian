@@ -58,6 +58,8 @@ excluded from the published documentation site for that reason.
 - Name each AC's verification explicitly — a named test, a measurement, or a
   search command. An AC with no named check is not Testable and does not
   dispatch.
+- State the size budget in the brief — planned commits and changed lines, inside
+  the pull-request limit CLAUDE.md sets. A brief with no budget is not Small.
 - Put the authority question in the brief: **what authority makes each factual
   question factual?** Ask it in round one, not at the round where the class
   finally names itself.
@@ -169,6 +171,8 @@ excluded from the published documentation site for that reason.
   [#578](https://github.com/theurian/theurian/pull/578).
 - Post the round record as a PR comment **before** any fix dispatch cites it.
   "Recorded" means a URL exists.
+- Put the size line — commits, files and changed lines against the plan — in
+  every round record and every scope-extension question to the owner.
 - Honor an exclusion, discharge or coverage claim that cites a test, row or
   record only after the citation **resolves** to an existing artifact — a grep
   hit or a node id, pasted. Second instance of the unresolved-citation family:
@@ -318,6 +322,14 @@ does not fire on — is [#724](https://github.com/theurian/theurian/issues/724).
 - Confirm `git rev-parse origin/<branch>` equals local HEAD before any flip or
   squash. The squash reads origin; a docs stage committed and not pushed does not
   land.
+- After `git fetch origin`, read
+  `uv run python tools/pr_size.py --base origin/<base> --head <tip>` before the
+  flip: `<base>` is the PR's base branch — for a stacked PR its parent, not
+  `main` — and `<tip>` the commit gated, the local branch before a push and
+  `origin/<branch>` here at the flip. Never let `--head` default to the checkout:
+  on the base branch it prints `commits=0 files=0 lines=0` and exits 0. Over the
+  limit, flip only with the owner's consent recorded in the round comment;
+  without it, take the size line to the owner.
 - Pass an explicit `--body` to `gh pr merge --squash`, carrying that PR's
   `Review-Finding:` trailers and the DCO `Signed-off-by`. Without it the squash
   message is the PR title and description only, and the trailers are dropped:
