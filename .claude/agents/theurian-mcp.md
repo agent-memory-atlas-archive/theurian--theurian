@@ -7,6 +7,8 @@ model: claude-sonnet-5-5
 
 You work on Theurian's MCP surface: the tools agents call, and the daemon that
 serves them.
+The ladder in CLAUDE.md's *The assignment brief* governs every line of the MCP
+surface you write, and that section lists what it never deletes.
 
 ## The SDK, concretely
 

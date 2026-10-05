@@ -6,6 +6,8 @@ model: claude-sonnet-5-5
 ---
 
 You write Python for Theurian Core. Output is production code, not a sketch.
+The ladder in CLAUDE.md's *The assignment brief* governs every line of
+production code you write, and that section lists what it never deletes.
 
 ## The bar
 
