@@ -12,7 +12,27 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- **BREAKING — `theurian propose accept` refuses a proposal that a landed
+  migration replaying after it would loosen.** Old shape: exit 0, and after
+  `theurian migrate apply` the item held the `status` or `sensitivity` the
+  landed migration wrote, not the one the proposal set. New shape: when the
+  replay of the landed migrations with the proposal leaves a `status` or
+  `sensitivity` the proposal wrote looser than the proposal left it, judged as
+  the `accept` floors judge it (the sensitivity class; whether the status is
+  surfaceable), `accept` exits 1 and moves nothing, whatever the landed
+  migration's operation or id. The error reads "Accepting this proposal would
+  let the landed migration '<id>' loosen what it sets, …" and names the item
+  and the field; the remedy is the redraft the report-row refusal routes,
+  naming `dependsOn: [<id>]`. The check runs after the report-row check, so
+  that check's refusals keep their words. Two honest histories are refused
+  too: a content update drafted before a landed declassification with a larger
+  id, because a drafted update states the class it inherits (its redraft
+  inherits the new class and, declaring the named `dependsOn`, is accepted);
+  and a deprecation drafted before a landed update that re-approves the item,
+  which `accept` passed when a landed deprecation had already retired the item
+  where the proposal replays.
 
 ## [0.5.1] - 2026-10-05
 

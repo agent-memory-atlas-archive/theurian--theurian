@@ -583,7 +583,10 @@ stated beside the number so a reader can attack the key and not only the count.
 > never block an accept.** The `undoes` condition is the second widening's,
 > below. That row is not this accept's, and a project holding one, the
 > original defect's victims included, must still accept a proposal that leaves
-> it as it is. With an empty baseline `accept` refuses both controls below:
+> it as it is. **Amended 2026-10-05:** this holds for the report check's baseline;
+> the end-state refusal (`_refuse_a_landed_overwrite`, after this check) can still refuse a proposal that leaves a held row as it is
+> (`test_accept_never_introduces_a_report_row.py::test_a_stale_withdrawal_minted_before_a_landed_reapproval_is_refused`).
+> With an empty baseline `accept` refuses both controls below:
 > measured on 2026-10-02 by running them against the source with the baseline
 > replaced by an empty tuple. The baseline is the report of the landed-alone replay both floors
 > already compare against, which `_refuse_an_effective_lowering` now returns,
@@ -661,7 +664,8 @@ stated beside the number so a reader can attack the key and not only the count.
 > unchanged, and a write between two retired statuses moves it without
 > changing what either gate answers. The control is a deprecation of an item
 > already deprecated: it changes no predicate, so U's row keeps naming D and
-> the accept exits 0.
+> the accept exits 0. **Superseded 2026-10-05:** the end-state refusal now
+> refuses the control, exit 1, as the stale-withdrawal test below asserts.
 >
 > `test_accept_never_introduces_a_report_row.py::test_a_raise_minted_before_an_update_that_already_undoes_a_landed_raise_is_refused`
 > asserts that before the accept the report is exactly U's `sensitivity` row,
@@ -675,9 +679,12 @@ stated beside the number so a reader can attack the key and not only the count.
 > asserts the same of the status face, reading the starting report as U's
 > `status` row undoing D and the error for `status` reading "from deprecated
 > to approved".
-> `::test_a_deprecation_of_an_already_deprecated_item_leaves_the_update_row_as_it_was`
-> asserts the control's exit 0 and, after `migrate apply`, the report it
-> started with.
+> `::test_a_stale_withdrawal_minted_before_a_landed_reapproval_is_refused`,
+> which under its earlier name asserted the control's exit 0, now asserts
+> exit 1, nothing moved, a `dependsOn: [<U>]` remedy and, after
+> `migrate apply`, the report it started with.
+> **Superseded 2026-10-05:** the control's acceptance read P's replay
+> position, after D, not the `approved` item P withdrew, which U left `approved`.
 > `tests/unit/test_introduced_moves.py::test_a_row_under_a_held_key_whose_undoes_differs_is_introduced`
 > holds as introduced a `status` and a `sensitivity` row naming the incoming
 > migration where the held row names another, and a row with no writer

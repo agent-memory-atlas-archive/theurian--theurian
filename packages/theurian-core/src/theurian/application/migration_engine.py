@@ -22,7 +22,7 @@ from typing import Final, Protocol
 
 from theurian.application.migration_alias_guards import refuse_alias_item_id_collision
 from theurian.application.migration_body_guards import refuse_duplicate_content_files
-from theurian.application.permissive_moves import LabelWriters, PermissiveMove
+from theurian.application.permissive_moves import LabelWriters, Overwrite, PermissiveMove
 from theurian.domain.enums import (
     KnowledgeStatus,
     RelationType,
@@ -164,6 +164,8 @@ class ApplyReport:
     #: looser at its end than it found them, in replay order (GHSA-v2qg-23fc-7fqp).
     #: Reported, never refused.
     permissive_moves: list[PermissiveMove] = field(default_factory=list)
+    #: In replay order, for ``accept``.
+    overwrites: list[Overwrite] = field(default_factory=list)
 
     @property
     def changed(self) -> bool:
@@ -474,6 +476,7 @@ class MigrationEngine:
 
         report.withdrawn_candidates = _gather_withdrawal_candidates(writer, project_id, affected)
         report.permissive_moves = list(labels.moves)
+        report.overwrites = list(labels.overwrites)
         return report
 
     def _apply_operation(  # noqa: PLR0912 -- a flat dispatch over 14 closed operations

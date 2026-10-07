@@ -221,6 +221,7 @@ def rehearse_migration_set(candidate: CandidateMigrationSet, *, clock: Clock) ->
             _read_items(database, candidate.project_id),
             tuple(report.permissive_moves),
             tuple(report.applied),
+            tuple(report.overwrites),
         )
 
 

@@ -15,9 +15,9 @@ the source, and neither moves a sentence of the entry when it stops being true:
    ``changeSensitivity``, ``restoreItem``, ...) started producing rows,
    ``accept`` would refuse such a proposal, since ``_refuse_a_reported_upsert``
    does not filter by operation kind. What would stop holding is the record:
-   T-28's residuals 5 and 10 ("... is accepted, with no report row") and the
-   CHANGELOG sentence that the sanctioned ``deprecateItem``, ``restoreItem`` and
-   ``changeSensitivity`` are never reported.
+   T-28's residual 5 ("the sanctioned `deprecateItem`, `restoreItem` and
+   `changeSensitivity` are not") and the CHANGELOG sentence that the sanctioned
+   ``deprecateItem``, ``restoreItem`` and ``changeSensitivity`` are never reported.
 
 **Fact side only.** The prose side of the entry is not pinned here.
 

@@ -6812,7 +6812,11 @@ another module is named:
    `_refuse_a_reported_upsert`), so it refuses both a new row and a held row
    whose `undoes` the proposal would change. The baseline is the landed-alone
    report, so a row the history already holds, naming the same `undoes`, never
-   blocks an accept. The remedy is a new migration that replays after the
+   blocks an accept under this control. The end-state refusal that runs after
+   it (residual 10) can now refuse such a proposal
+   (`proposal_service.py :: _refuse_a_landed_overwrite`;
+   `test_accept_never_introduces_a_report_row.py::test_a_stale_withdrawal_minted_before_a_landed_reapproval_is_refused`).
+   The remedy is a new migration that replays after the
    landed one, routed by every operation kind the refused proposal carries
    (`proposal_service.py :: _redraft_remedy`).
 
@@ -6888,8 +6892,21 @@ it there.
    order whatever order they merged in, and neither is an upsert. It is the
    same ordering root cause as residual 6, outside the upsert class the report
    covers.
-10. **An accept whose withdrawal or raise a landed sanctioned operation with a
-    later migration id undoes is accepted, with no report row.**
+10. **Closed (unreleased).** An accept whose withdrawal or raise a landed sanctioned
+    operation with a later migration id undoes was accepted, with no report
+    row. `accept` now refuses it on the field's end state: exit 1 and nothing
+    moved when the union replay leaves a `status` or `sensitivity` the
+    proposal wrote looser, by the floors' predicates, than the proposal left
+    it, whatever the landed operation or id
+    (`application/permissive_moves.py :: loosened_after`, called from
+    `proposal_service.py :: _refuse_a_landed_overwrite`).
+    `test_accept_refuses_a_replay_order_overwrite.py::test_a_restatement_after_the_proposal_hides_no_later_loosening`
+    holds it for a raise to `confidential` undone by a landed
+    `changeSensitivity` back to `internal`, and a deprecation undone by a
+    landed `restoreItem`, each behind a landed restatement of the proposal's
+    label, with both landed ids smaller, and both larger, than the
+    proposal's: it asserts exit 1, an error naming the undoing migration, and
+    nothing moved.
 
 **A known cost, not a residual of the fix.** There is no way to acknowledge a
 row. A history that already holds a reported upsert, the original defect's

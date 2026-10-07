@@ -154,9 +154,11 @@ cannot approve knowledge"** rule below, not the front-matter
       after that migration's, and only `dependsOn` puts it after, so without it
       the new draft can replay before that migration too. It also refuses one
       that a landed migration replaying after it would undo, whether that adds
-      a row to the report or changes which migration a row already there says
-      it undoes. The fix there is a new migration that replays after the
-      landed one, routed by everything the refused proposal carries: a fresh
+      a row to the report, changes which migration a row already there says
+      it undoes, or only leaves what it sets looser: an update drafted before a
+      landed declassification with a larger id is refused too. The fix there
+      is a new migration that replays after the landed one, routed by
+      everything the refused proposal carries: a fresh
       `theurian propose` when all of it is content,
       `knowledge.generateMigrationDraft` when all of it is changes that tool
       drafts, and otherwise, as for a reclassification or a readmission, a

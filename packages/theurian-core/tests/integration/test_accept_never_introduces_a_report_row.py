@@ -542,7 +542,8 @@ def test_a_withdrawal_that_restores_first_is_refused_when_it_would_take_over_an_
     assert _report() == rows_before
 
 
-# -- controls: a row the history already holds is the baseline, never a refusal ------
+# -- controls: the report check's baseline is the row the history holds; the end-state
+# check still refuses a stale withdrawal ------------------------------------------
 
 
 def test_a_proposal_on_the_item_of_an_existing_row_that_leaves_the_row_alone_is_accepted(
@@ -573,13 +574,14 @@ def test_a_proposal_on_the_item_of_an_existing_row_that_leaves_the_row_alone_is_
     assert _report() == rows_before
 
 
-def test_a_deprecation_of_an_already_deprecated_item_leaves_the_update_row_as_it_was(
+def test_a_stale_withdrawal_minted_before_a_landed_reapproval_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The control beside the re-attribution face: a no-op accept moves no ``undoes``.
+    """The deprecation restates the landed one with a larger id, so the update re-approving
+    after it undoes the proposal: refused, and the update's row stays as it was.
 
-    The item is already deprecated by the landed migration, so the proposal's
-    deprecation changes no predicate and the update's row keeps naming that landing.
+    The acceptance this test used to pin read the replay position, not the state the
+    proposal was drafted against.
     """
     project = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
     deprecation_draft = _deprecate_draft(project, tmp_path)
@@ -592,9 +594,13 @@ def test_a_deprecation_of_an_already_deprecated_item_leaves_the_update_row_as_it
     assert [(r["migrationId"], r["field"], r["undoes"]) for r in rows_before] == [
         (update["migrationId"], "status", SORTS_BEFORE_A_DRAFT)
     ], rows_before
+    before = landing_zone(project.root)
 
-    code, accepted = cli("propose", "accept", deprecation_draft["proposalId"])
+    code, payload = cli("propose", "accept", deprecation_draft["proposalId"])
+
+    assert code == 1, payload
+    assert landing_zone(project.root) == before, "a refused accept moved files"
+    assert "loosen what it sets" in str(payload["error"]), payload
+    assert f"dependsOn: [{update['migrationId']}]" in str(payload["remedy"]), payload
     cli_ok("migrate", "apply")
-
-    assert code == 0, accepted
     assert _report() == rows_before

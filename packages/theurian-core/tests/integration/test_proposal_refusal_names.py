@@ -263,6 +263,7 @@ _UNGATED_BY_CONSTRUCTION: Final[Mapping[tuple[str, str], str]] = {
     ("_refuse_if_migration_present", "migration_id.value"): "MigrationId, an anchored ULID",
     ("_no_migration_error", "recorded.value"): "MigrationId, an anchored ULID",
     ("_refuse_a_reported_upsert", "row.migration_id.value"): "MigrationId, an anchored ULID",
+    ("_refuse_a_landed_overwrite", "first.migration_id.value"): "MigrationId, an anchored ULID",
     ("_check_expected_revision", "current.value"): "RevisionId, an anchored ULID",
     ("_check_expected_revision", "expected.value"): "RevisionId, an anchored ULID",
     # NOT "an anchored pattern", which was the reason here and is false:
@@ -333,9 +334,13 @@ _UNGATED_BY_CONSTRUCTION: Final[Mapping[tuple[str, str], str]] = {
     # A permissive-move row's label field and its two values: the `LabelField` literal
     # and closed `KnowledgeStatus` / `Sensitivity` members the engine set, never text.
     ("_refuse_a_reported_upsert", "row.field"): "a LabelField literal, status or sensitivity",
+    ("_refuse_a_landed_overwrite", "first.field"): "a LabelField literal, status or sensitivity",
     ("_refuse_a_reported_upsert", "row.before.value"): "a closed KnowledgeStatus/Sensitivity value",
     ("_refuse_a_reported_upsert", "row.after.value"): "a closed KnowledgeStatus/Sensitivity value",
     ("_refuse_a_reported_upsert", "landed"): "one of this function's two literals",
+    ("_refuse_a_landed_overwrite", "first.before.value"): "a closed status or sensitivity value",
+    ("_refuse_a_landed_overwrite", "first.after.value"): "a closed status or sensitivity value",
+    ("_refuse_a_landed_overwrite", "landed"): "one of this function's two literals",
     ("_evidence_indeterminate", "EVIDENCE_FILE"): "this module's own constant",
     ("_evidence_unscannable", "EVIDENCE_FILE"): "this module's own constant",
     ("_inferred_answer", "EVIDENCE_FILE"): "this module's own constant",

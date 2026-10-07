@@ -406,7 +406,9 @@ def propose_accept(
     changes which migration a row the landed report holds says it undoes: as
     when this proposal's migration replays before a landed one that re-sets
     what its revision loosened, or a landed migration that replays after this
-    proposal's undoes what it sets. The cure is a new migration that replays
+    proposal's undoes what it sets. Nor may the replay leave a ``status`` or
+    ``sensitivity`` it sets looser than it left it, whatever the landed migration's
+    operation or id. The cure is a new migration that replays
     after the landed one, routed by every operation the proposal carries: a
     fresh draft with ``theurian propose`` when all of them are content, with
     ``knowledge.generateMigrationDraft`` when all of them are operations it

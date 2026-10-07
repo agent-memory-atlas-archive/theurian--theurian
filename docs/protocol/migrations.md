@@ -446,10 +446,37 @@ match, not `before`, because it is decided at the floors' granularity above:
 the status case leaves `before` as it was, and a write between two retired
 statuses moves `before` without changing what either gate answers. A row the
 landed set already reports, naming the same migration as what it undoes, never
-refuses: it is the history's, not this accept's, and a project holding one must
-still accept a proposal that leaves it as it is. The
+refuses: it is the history's, not this accept's, and the baseline, so a
+proposal that leaves it as it is passes this check, though the end-state
+refusal below can still refuse it. The
 check runs after the two floors (`ProposalService.accept`), so a proposal they
 refuse too gets their refusal.
+
+**Nor may a landed migration leave what the proposal sets looser**.
+After the report check (`ProposalService.accept`),
+`accept` refuses, exit 1 and nothing moved, when the replay ends a `status` or
+`sensitivity` the proposal wrote looser, by the floors' predicates, than the
+proposal left it, whatever the landed operation and whatever rows the landed
+set reports, and names the landed migration that last took it below that
+level (`application/permissive_moves.py :: loosened_after`, from
+`_refuse_a_landed_overwrite`). Its error says that migration would "loosen
+what it sets", and its remedy is the redraft below, naming it in `dependsOn`
+(`test_accept_refuses_a_replay_order_overwrite.py::test_accept_refuses_and_names_the_overwriting_migration_and_the_route`).
+`::test_a_restatement_after_the_proposal_hides_no_later_loosening` refuses
+where a landed restatement of the proposal's label is followed by a landed
+`restoreItem` or `changeSensitivity` that loosens it, with both landed ids
+smaller, and both larger, than the proposal's, and its error names the
+loosening migration. Where a landed migration sets the field looser than the
+proposal does and a later one sets it back to the proposal's value, a
+`changeSensitivity` then another or a `restoreItem` then a `deprecateItem`,
+with both landed ids smaller, and both larger, than the proposal's, `accept`
+passes
+(`::test_a_loosening_after_the_proposal_that_a_landed_migration_raises_back_is_accepted`).
+As `theurian propose` writes the labels an update inherits (above), an honest
+update minted before a landed, larger-id declassification restates the old
+class and is refused too; its redraft, which inherits the lower class and
+declares `dependsOn` on the declassification, is accepted
+(`::test_a_content_update_minted_before_a_landed_larger_id_declassification_is_refused`).
 
 For the proposal's own row, the error names the proposal's migration, the item,
 the field, both values, and the landed migrations that replay after it and
@@ -610,10 +637,10 @@ started with.
 `::test_a_withdrawal_that_restores_first_is_refused_when_it_would_take_over_an_update_row`
 asserts the same of the status one, reading the starting report as the
 update's `status` row undoing the landed deprecation and the error for
-`status` reading "from deprecated to approved". Its control,
-`::test_a_deprecation_of_an_already_deprecated_item_leaves_the_update_row_as_it_was`,
-accepts a deprecation of the item the landed deprecation already withdrew,
-which changes no predicate, with exit 0, and after `migrate apply` the report
+`status` reading "from deprecated to approved". Its former control,
+`::test_a_stale_withdrawal_minted_before_a_landed_reapproval_is_refused`,
+refuses a deprecation minted before the update: exit 1, nothing moved, a
+remedy naming `dependsOn: [<update>]`, and after `migrate apply` the report
 is the one it started with.
 `::test_the_withdrawal_drafted_again_after_the_update_is_accepted_and_takes_effect`
 drafts a deprecation with `knowledge.generateMigrationDraft` after the update,

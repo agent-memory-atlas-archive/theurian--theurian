@@ -99,7 +99,12 @@ from theurian.application.item_labels import (
     lowered_sensitivities,
     readmitted_items,
 )
-from theurian.application.permissive_moves import PermissiveMove, introduced_moves
+from theurian.application.permissive_moves import (
+    Overwrite,
+    PermissiveMove,
+    introduced_moves,
+    loosened_after,
+)
 from theurian.application.project_service import (
     GitignoreIsASymbolicLinkError,
     ProjectError,
@@ -517,12 +522,13 @@ class CandidateMigrationSet:
 
 @dataclass(frozen=True, slots=True)
 class Replay:
-    """What one rehearsal's replay left: its items, its permissive-move rows, and its order."""
+    """What one rehearsal's replay left: its items, permissive-move rows, order and overwrites."""
 
     items: ReplayedItems
     moves: tuple[PermissiveMove, ...]
     #: The migration ids in the order the replay applied them.
     order: tuple[MigrationId, ...]
+    overwrites: tuple[Overwrite, ...]
 
 
 #: Proves a :class:`CandidateMigrationSet` survives the pipeline ``migrate
@@ -1445,9 +1451,11 @@ class ProposalService:
             location, migration_file, migration_bytes, document, moves
         )
         held_moves = self._refuse_an_effective_lowering(candidate, union.items)
-        _refuse_a_reported_upsert(
-            location, document, held_moves, union, tuple(self._landed_migrations())
-        )
+        landed = tuple(self._landed_migrations())
+        _refuse_a_reported_upsert(location, document, held_moves, union, landed)
+        # Second, so every refusal the report check makes keeps its words: this adds the
+        # landed writers no report row shows, sanctioned operations among them.
+        _refuse_a_landed_overwrite(location, document, union, landed)
 
         accepted = self._commit(proposal_id, moves, migration_file, migration_bytes, destination)
         return replace(accepted, secret_scan=secret_scan, local=location.local)
@@ -4622,6 +4630,39 @@ def _refuse_a_reported_upsert(
         f"migration {row.migration_id.value} as moving {_names([row.item_id.value])} "
         f"{row.field} from {row.before.value} to {row.after.value}: it replays before "
         f"{landed} {_names(later)}.",
+        remedy=_redraft_remedy(
+            _kinds_of(document),
+            ", ".join(later),
+            [m for m in landed_migrations if m.migration_id.value in later],
+            location,
+        ),
+    )
+
+
+def _refuse_a_landed_overwrite(
+    location: _ProposalLocation,
+    document: Mapping[str, object],
+    union: Replay,
+    landed_migrations: tuple[Migration, ...],
+) -> None:
+    """Refuse a proposal a landed migration replaying after it would loosen.
+
+    The replay leaves a field this proposal's migration wrote looser than it left it, so the
+    label served is below the one accepted. Any operation counts, ``restoreItem`` and
+    ``changeSensitivity`` included, and any id: every landed migration was decided first.
+    """
+    incoming = _migration_id_or_none(document.get("id"))
+    overwrites = loosened_after(union.overwrites, incoming)
+    if not overwrites:
+        return
+    first = overwrites[0]
+    later = list(dict.fromkeys(o.migration_id.value for o in overwrites))
+    landed = "the landed migration" if len(later) == 1 else "the landed migrations"
+    raise ProposalError(
+        f"Accepting this proposal would let {landed} {_names(later)} loosen what it sets, "
+        f"replaying after its migration: {first.migration_id.value} moves "
+        f"{_names([first.item_id.value])} {first.field} from {first.before.value} to "
+        f"{first.after.value}.",
         remedy=_redraft_remedy(
             _kinds_of(document),
             ", ".join(later),

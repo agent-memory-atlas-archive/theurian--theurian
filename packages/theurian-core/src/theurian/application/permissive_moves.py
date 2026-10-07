@@ -62,6 +62,47 @@ class PermissiveMove:
             raise ValueError("undoes and kind are known together or not at all")
 
 
+@dataclass(frozen=True, slots=True)
+class Overwrite:
+    """A field a migration wrote, on the item as the migration found it and as its end left it.
+
+    ``found`` is ``left`` on an item the migration created. Not a report row: ``accept``
+    reads these.
+    """
+
+    migration_id: MigrationId
+    item_id: ItemId
+    field: LabelField
+    found: KnowledgeItem
+    left: KnowledgeItem
+
+    @property
+    def before(self) -> KnowledgeStatus | Sensitivity:
+        return _value(self.found, self.field)
+
+    @property
+    def after(self) -> KnowledgeStatus | Sensitivity:
+        return _value(self.left, self.field)
+
+
+def loosened_after(
+    overwrites: Sequence[Overwrite], migration_id: MigrationId | None
+) -> tuple[Overwrite, ...]:
+    """Per field ``migration_id`` wrote that ends looser than it left it, by the accept floors'
+    predicates, the write that last took it below that level."""
+    level: dict[tuple[ItemId, LabelField], KnowledgeItem] = {}
+    below: dict[tuple[ItemId, LabelField], Overwrite | None] = {}
+    for o in overwrites:
+        key = (o.item_id, o.field)
+        if o.migration_id == migration_id:
+            level[key], below[key] = o.left, None
+        elif key in level:
+            now, was = (_loosens(level[key], item, o.field) for item in (o.left, o.found))
+            if now != was:
+                below[key] = o if now else None
+    return tuple(o for o in below.values() if o is not None)
+
+
 def introduced_moves(
     held: Sequence[PermissiveMove], union: Sequence[PermissiveMove]
 ) -> tuple[PermissiveMove, ...]:
@@ -151,11 +192,18 @@ class LabelWriters:
         self._latest: dict[ItemId, KnowledgeItem] = {}
         # The fields an upsert in the current migration loosened, in replay order.
         self._loosened: dict[tuple[ItemId, LabelField], _Held] = {}
+        self._written: dict[tuple[ItemId, LabelField], MigrationId] = {}
+        self._overwrites: list[Overwrite] = []
 
     @property
     def moves(self) -> tuple[PermissiveMove, ...]:
         """Every migration's rows; the last migration fed is decided as its writes stand."""
         return (*self._moves, *self._settled())
+
+    @property
+    def overwrites(self) -> tuple[Overwrite, ...]:
+        """Every migration's, decided as :attr:`moves` is."""
+        return (*self._overwrites, *self._overwritten())
 
     def wrote(
         self,
@@ -206,10 +254,12 @@ class LabelWriters:
         if migration_id != self._migration:
             # Ids are unique within a set and fed in replay order: a new id is a new migration.
             self._moves.extend(self._settled())
+            self._overwrites.extend(self._overwritten())
             self._migration = migration_id
             self._held = {}
             self._latest = {}
             self._loosened = {}
+            self._written = {}
         item_id = landed.item_id
         if item_id not in self._held:
             self._held[item_id] = (
@@ -227,6 +277,15 @@ class LabelWriters:
             )
         self._latest[item_id] = landed
         return self._held[item_id]
+
+    def _overwritten(self) -> list[Overwrite]:
+        """The current migration's: each field it wrote."""
+        writes: list[Overwrite] = []
+        for (item_id, label), migration_id in self._written.items():
+            held, left = self._held[item_id], self._latest[item_id]
+            found = left if held is None else held.item
+            writes.append(Overwrite(migration_id, item_id, label, found, left))
+        return writes
 
     def _settled(self) -> list[PermissiveMove]:
         """The current migration's rows: each noted field its end leaves looser than its start."""
@@ -246,6 +305,8 @@ class LabelWriters:
     ) -> None:
         """Make the write ``label``'s writer, unless it left the field as it found it.
 
+        Either way it is one of the fields the migration wrote.
+
         A write on an item its migration created (``held`` is ``None``) is the item's
         initial labelling, as a ``createItem`` is, so it is no withdrawal: a root
         migration's upsert stating ``confidential`` over its ``createItem``'s default
@@ -256,6 +317,7 @@ class LabelWriters:
         proposed after a retirement does not displace the withdrawal. Sensitivity is
         totally ordered by ``DISCLOSURE_ORDER``: a changed value is a changed class.
         """
+        self._written[landed.item_id, label] = migration_id
         tightened = prior is not None and _loosens(landed, prior, label)
         if (
             prior is not None

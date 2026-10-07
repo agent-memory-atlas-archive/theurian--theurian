@@ -1311,13 +1311,15 @@ def test_propose_accept_does_not_print_the_report(
 
 
 #: Every spelling of the report in code: the payload key, the module, the row type,
-#: the writer map and the renderer module.
+#: the writer map, the renderer module, the overwrite row and its finder.
 _REPORT_SPELLINGS: Final = (
     "permissiveMoves",
     "permissive_moves",
     "PermissiveMove",
     "LabelWriters",
     "permissive_move_report",
+    "Overwrite",
+    "loosened_after",
 )
 
 _REPO: Final = Path(__file__).resolve().parents[4]
@@ -1359,6 +1361,7 @@ _REPORT_NAMES: Final = frozenset(
         "ApplyReport",
         "LabelWriters",
         "PermissiveMove",
+        "overwrites",
         "rehearse_migration_set",
         "Replay",
         "MigrationSetRehearsal",
