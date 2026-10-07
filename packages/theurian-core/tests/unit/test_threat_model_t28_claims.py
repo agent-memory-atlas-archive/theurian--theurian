@@ -8,23 +8,21 @@ the source, and neither moves a sentence of the entry when it stops being true:
    package, inside ``application/proposal_service.py``. A second call site is a
    second floor the entry does not describe, or one that quietly applies a
    different ``held``/``union`` pair.
-2. Only ``upserted`` produces report rows. ``LabelWriters`` holds two row
-   containers, ``_loosened`` and ``_moves``; ``moves`` is built from both. The
-   first is added to only from ``upserted``, and the second only by ``_track``
-   extending it with ``self._settled()``. If a sanctioned operation (``wrote``:
-   ``changeSensitivity``, ``restoreItem``, ...) started producing rows,
-   ``accept`` would refuse such a proposal, since ``_refuse_a_reported_upsert``
-   does not filter by operation kind. What would stop holding is the record:
-   T-28's residual 5 ("the sanctioned `deprecateItem`, `restoreItem` and
-   `changeSensitivity` are not") and the CHANGELOG sentence that the sanctioned
-   ``deprecateItem``, ``restoreItem`` and ``changeSensitivity`` are never reported.
+2. Only ``upserted`` and ``wrote`` produce report rows: ``LabelWriters`` holds two row
+   containers, ``_loosened`` and ``_moves``, and ``moves`` is built from both; the
+   first is added to only from those two, the second only by ``_track`` extending
+   it with ``self._settled()``. A sanctioned write (``wrote``: ``changeSensitivity``,
+   ``restoreItem``, ...) adds a row only as ``reorders``, which
+   ``test_reorders_report.py`` holds, and ``accept`` refuses a proposal introducing
+   one. A further producer changes which operations are reported, what T-28's
+   residuals 5 and 10 and the CHANGELOG state.
 
 **Fact side only.** The prose side of the entry is not pinned here.
 
 **Reach.** Every ``.py`` under ``src/theurian`` is parsed; a floor call counts
 when its callee is a bare name or an attribute with the floor's name. Rows,
 within ``LabelWriters``: any statement that adds to ``self._loosened`` or
-``self._moves`` outside ``upserted`` -- a subscript or attribute-chain store, an
+``self._moves`` outside ``upserted`` and ``wrote`` -- a subscript or attribute-chain store, an
 augmented assignment, or an adding method call (``setdefault``, ``update``,
 ``append``, ``extend``, ...) -- is a producer, except the one allowed site,
 ``self._moves.extend(self._settled())`` in ``_track``, which must exist exactly
@@ -58,7 +56,7 @@ _FLOOR_SITE: Final = "application/proposal_service.py"
 _MOVES: Final = _SRC / "application" / "permissive_moves.py"
 _WRITERS: Final = "LabelWriters"
 _SOURCE_OF_ROWS: Final = "_loosened"
-_PRODUCER: Final = "upserted"
+_PRODUCERS: Final = ("upserted", "wrote")
 _MOVES_LIST: Final = "_moves"
 _TRACK: Final = "_track"
 _ADDERS: Final = frozenset(
@@ -180,13 +178,13 @@ def test_each_accept_floor_has_one_call_site_and_it_is_in_the_proposal_service()
     )
 
 
-def test_only_upserted_adds_a_row_source_to_label_writers() -> None:
-    """Rows reach ``moves`` from two containers; a producer other than ``upserted`` would
-    make ``accept`` refuse a sanctioned operation and falsify T-28's "no report row".
+def test_only_upserted_and_wrote_add_a_row_source_to_label_writers() -> None:
+    """Rows reach ``moves`` from two containers; a third producer would report, and make
+    ``accept`` refuse, operations T-28 does not describe as reported.
 
-    RED means a method of ``LabelWriters`` other than ``upserted`` adds to
+    RED means a method of ``LabelWriters`` other than ``upserted`` and ``wrote`` adds to
     ``_loosened`` or ``_moves`` (beyond ``_track``'s one ``extend(self._settled())``),
-    ``upserted`` no longer does, or that one allowed site is not there exactly once.
+    either no longer does, or that one allowed site is not there exactly once.
     """
     methods = _label_writers_methods()
 
@@ -201,9 +199,9 @@ def test_only_upserted_adds_a_row_source_to_label_writers() -> None:
         if isinstance(node, ast.Call) and _is_settled_extend(node)
     ]
 
-    assert {"wrote", _PRODUCER, _TRACK} <= methods.keys(), "premise: the methods exist"
+    assert {*_PRODUCERS, _TRACK} <= methods.keys(), "premise: the methods exist"
     assert len(settled_extends) == 1, "premise: the allowed site is in _track, once"
-    assert producers == [_PRODUCER], f"methods adding to a row container: {producers}"
+    assert producers == sorted(_PRODUCERS), f"methods adding to a row container: {producers}"
 
 
 def test_label_writers_row_containers_are_not_reached_from_outside_the_class() -> None:

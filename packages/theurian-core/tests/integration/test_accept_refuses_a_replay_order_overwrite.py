@@ -7,6 +7,13 @@ migration that loosened it. The predicate is 0.5.1's floors': the class for
 sensitivity, ``may_surface(..., include_unapproved=True)`` for status. The remedy is
 ``_redraft_remedy``'s and names ``dependsOn: [<the overwriting landed migration>]``.
 
+Which check speaks depends on the rows (GHSA-wwq9). Where accepting P would add a report
+row the landed migrations alone do not report, a ``reorders`` row included, or would make a
+row the history already holds name a different migration in ``undoes``, the report check
+refuses first, in its words ("undoing what this proposal sets"): for instance, a smaller-id
+``dependsOn`` lowering replaying after P's raise, with no id larger than P's having written
+the field. Otherwise the end-state check's words ("loosen what it sets") remain.
+
 P3: for the migration set ``accept`` replays, every floor-read label an accepted proposal
 writes (sensitivity class; status surfaceability via ``may_surface(...,
 include_unapproved=True)``) is, by those predicates, no looser after that replay than the
@@ -21,11 +28,13 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 from label_inheritance_support import (
     ROOT_MIGRATION_ID,
     SORTS_AFTER_A_DRAFT,
+    LabelledProject,
     cli,
     cli_ok,
     cli_propose,
@@ -56,6 +65,8 @@ from replay_order_support import (
 
 pytestmark = pytest.mark.integration
 
+REPORT_CHECK, END_STATE_CHECK = "undoing what this proposal sets", "loosen what it sets"
+
 LARGER_IDS = (ABOVE_A_DRAFT, SORTS_AFTER_A_DRAFT)
 
 
@@ -63,7 +74,8 @@ LARGER_IDS = (ABOVE_A_DRAFT, SORTS_AFTER_A_DRAFT)
 def test_accept_refuses_and_names_the_overwriting_migration_and_the_route(
     face: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The error is the end-state refusal's own, and the remedy never says "accept again"."""
+    """D2 replays after the proposal with a smaller id: the report check's words, and the
+    remedy never says "accept again"."""
     p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
     history(p, face)
     drafted = draft(p, face)
@@ -73,7 +85,8 @@ def test_accept_refuses_and_names_the_overwriting_migration_and_the_route(
 
     assert code == 1, payload
     assert all(named in str(payload["error"]) for named in (D2, p.item_id, face)), payload
-    assert "loosen what it sets" in str(payload["error"]), payload
+    assert REPORT_CHECK in str(payload["error"]), payload
+    assert END_STATE_CHECK not in str(payload["error"]), payload
     assert f"dependsOn: [{D2}]" in str(payload["remedy"]), payload
     assert not re.search(r"accept[^.]*again", str(payload["remedy"]), re.IGNORECASE), payload
     assert landing_zone(p.root) == before, "a refused accept moved files"
@@ -99,16 +112,25 @@ def test_a_fresh_draft_declaring_the_named_dependson_is_accepted_and_its_label_s
 
 
 @pytest.mark.parametrize(
-    "ids", [(D1, D2), LARGER_IDS], ids=["smaller-id-restatement", "larger-id-restatement"]
+    "case",
+    [
+        pytest.param(((D1, D2), REPORT_CHECK, END_STATE_CHECK), id="smaller-id-restatement"),
+        pytest.param((LARGER_IDS, END_STATE_CHECK, REPORT_CHECK), id="larger-id-restatement"),
+    ],
 )
 @pytest.mark.parametrize("face", FACES)
 def test_a_restatement_after_the_proposal_hides_no_later_loosening(
-    face: str, ids: tuple[str, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    face: str,
+    case: tuple[tuple[str, str], str, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The first waits on the root, so it replays after the proposal and restates its label.
 
     Whatever its id, the second's loosening leaves the field looser than the proposal did.
+    ``case`` is the ids, the words that speak and the words that stay silent.
     """
+    ids, speaks, silent = case
     p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
     history(p, face, chained=True, ids=ids)
     drafted = draft(p, face)
@@ -118,21 +140,15 @@ def test_a_restatement_after_the_proposal_hides_no_later_loosening(
 
     assert code == 1, payload
     assert ids[1] in str(payload["error"]), payload
-    assert "loosen what it sets" in str(payload["error"]), payload
+    assert speaks in str(payload["error"]), payload
+    assert silent not in str(payload["error"]), payload
     assert landing_zone(p.root) == before, "a refused accept moved files"
 
 
-@pytest.mark.parametrize("ids", [(D1, D2), LARGER_IDS], ids=["smaller", "larger"])
-@pytest.mark.parametrize("face", FACES)
-def test_a_loosening_after_the_proposal_that_a_landed_migration_raises_back_is_accepted(
-    face: str, ids: tuple[str, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The first lowers the field below the proposal's, the second raises it back, with both
-    ids smaller or both larger: the union ends at the proposal's own label.
-
-    The status face pins that a status raise clears the loosening as a class raise does.
-    """
-    p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+def _lowered_then_raised_back(
+    p: LabelledProject, face: str, ids: tuple[str, str]
+) -> dict[str, Any]:
+    """A draft, then a landed lowering that a second landed migration raises back."""
     drafted = draft(p, face)
     first_id, second_id = ids
     if face == "sensitivity":
@@ -143,10 +159,43 @@ def test_a_loosening_after_the_proposal_that_a_landed_migration_raises_back_is_a
     write(p.root, first_id, "lower", depending_on(lower, ROOT_MIGRATION_ID))
     write(p.root, second_id, "raise-back", depending_on(raise_back, first_id))
     cli_ok("migrate", "apply")
+    return drafted
+
+
+@pytest.mark.parametrize("face", FACES)
+def test_a_larger_id_loosening_that_a_landed_migration_raises_back_is_accepted(
+    face: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first lowers the field below the proposal's, the second raises it back, both ids
+    larger: the union ends at the proposal's own label and no row is made.
+
+    The status face pins that a status raise clears the loosening as a class raise does.
+    """
+    p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+    drafted = _lowered_then_raised_back(p, face, LARGER_IDS)
 
     code, payload = cli("propose", "accept", drafted["proposalId"])
 
     assert code == 0, payload
+
+
+@pytest.mark.parametrize("face", FACES)
+def test_a_smaller_id_loosening_that_a_landed_migration_raises_back_is_refused_for_its_row(
+    face: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both ids are smaller, so the lowering replays after the proposal and is a ``reorders``
+    row the accept would add, permanently, even though the field ends at the proposal's own
+    label: accept never introduces a report row."""
+    p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+    drafted = _lowered_then_raised_back(p, face, (D1, D2))
+    before = landing_zone(p.root)
+
+    code, payload = cli("propose", "accept", drafted["proposalId"])
+
+    assert code == 1, payload
+    assert REPORT_CHECK in str(payload["error"]), payload
+    assert f"dependsOn: [{D1}]" in str(payload["remedy"]), payload
+    assert landing_zone(p.root) == before, "a refused accept moved files"
 
 
 def test_a_raise_of_another_item_does_not_forget_this_items_loosening(
@@ -168,7 +217,8 @@ def test_a_raise_of_another_item_does_not_forget_this_items_loosening(
     code, payload = cli("propose", "accept", drafted["proposalId"])
 
     assert code == 1, payload
-    assert "loosen what it sets" in str(payload["error"]), payload
+    assert REPORT_CHECK in str(payload["error"]), payload
+    assert END_STATE_CHECK not in str(payload["error"]), payload
     assert landing_zone(p.root) == before, "a refused accept moved files"
 
 
@@ -188,8 +238,8 @@ def test_the_report_check_speaks_first_when_both_checks_would_refuse(
     code, payload = cli("propose", "accept", drafted["proposalId"])
 
     assert code == 1, payload
-    assert "undoing what this proposal sets" in str(payload["error"]), payload
-    assert "loosen what it sets" not in str(payload["error"]), payload
+    assert REPORT_CHECK in str(payload["error"]), payload
+    assert END_STATE_CHECK not in str(payload["error"]), payload
     assert landing_zone(p.root) == before, "a refused accept moved files"
 
 

@@ -49,7 +49,10 @@ Apply pending knowledge migrations to the canonical store.
   re-declared in place included, and the new revision undid it — as when
   `undoes` was merged after the update was accepted, with an id that sorts
   before the update's.
-  `kind: lowers` means that change withdrew nothing. Say that nothing was
+  `kind: lowers` means that change withdrew nothing. `kind: reorders` means
+  `migrationId`, by any change, replayed through its `dependsOn` after
+  `undoes`, the largest id to have written the field before it and a larger
+  one than its own, and took it from at or above that id's level to below. Say that nothing was
   refused: the report changes no exit code. If `migrate validate` prints
   `permissiveMovesUnavailable` instead, show it: the set did not replay, so
   there is no report, and `migrate apply` runs the same replay. The report is

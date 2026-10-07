@@ -368,6 +368,22 @@ stated beside the number so a reader can attack the key and not only the count.
 > on 2026-10-02; 41 from 32 and 6 for the first two before the granularity fix
 > below, and 28 for the first before those, each of which no longer matched;
 > the first widening added the third and the sixth file.
+> **Amended 2026-10-06:** a sanctioned write is now reported, as
+> `kind: "reorders"` (GHSA-wwq9-p8wq-5m68). The sentence above kept the
+> sanctioned operations out as reviewed intent, which holds only in id order:
+> a migration declaring `dependsOn` replays after every one declaring none, so
+> a smaller-id lowering or `restoreItem` undid a larger id's raise or
+> deprecation with no row. The rule for a `reorders` row is stated under that
+> name in [the migration format](../protocol/migrations.md#permissive-moves-are-reported-not-refused).
+> The report judges each migration against the attribution there; `accept`'s
+> end-state refusal judges the proposal's own field where the replay ends. By
+> attribution `accept` would pass a larger-id landed loosening, which takes the
+> attribution; by end state the report would name every lowering that follows
+> a raise in id order, which the sentence above leaves unreported.
+> Decided 2026-10-06: `migrate validate` and `migrate apply` report a
+> `reorders` row and refuse nothing, because the report never moves an exit
+> code (*Decided: a report, not a refusal*, above) and a refusal would stop
+> histories that already apply; an ordering fix is to follow in its own ADR.
 >
 > **`kind` is decided by the change's effect, not its operation.** The report
 > first decided it by operation type: a `deprecateItem` or `changeSensitivity`

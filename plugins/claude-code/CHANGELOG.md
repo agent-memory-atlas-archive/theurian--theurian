@@ -61,6 +61,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   These three describe Core 0.5.1. The declared range,
   `>= 0.1.0-dev.0, < 0.6.0`, still admits Core 0.5.0 and earlier, where those
   refusals do not happen and `permissiveMoves` is absent.
+- **`/theurian:migrate` defines `kind: reorders`**, the `permissiveMoves` row
+  Core 0.5.2 adds for GHSA-wwq9-p8wq-5m68; when a row arises is stated in
+  the command itself. Core 0.5.1 and earlier never print it.
 
 ### Added
 

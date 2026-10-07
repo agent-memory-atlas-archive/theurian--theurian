@@ -299,13 +299,13 @@ per loosened field:
 
 | Key | Value |
 | :-- | :-- |
-| `migrationId` | the migration holding the `upsertRevision` |
+| `migrationId` | the migration holding the `upsertRevision`; for `reorders`, the migration whose write it is |
 | `itemId` | the item |
 | `field` | `status` or `sensitivity` |
 | `before` | the item's value at the start of that migration |
 | `after` | the item's value at the end of that migration |
-| `undoes` | the migration that, before that migration, last changed whether the item may surface (`status`) or its class (`sensitivity`) |
-| `kind` | `undoes` when that change tightened the field, whatever operation made it; `lowers` otherwise |
+| `undoes` | the migration that, before that migration, last changed whether the item may surface (`status`) or its class (`sensitivity`); for `reorders`, the larger-id migration the field is attributed to |
+| `kind` | `undoes` when that change tightened the field, whatever operation made it; `lowers` otherwise; `reorders` by the rule below |
 
 `kind` is decided by the change's effect, not its operation, and judged by the
 `accept` floors' own predicates: for `status`, whether
@@ -367,8 +367,8 @@ a hand-written upsert can name a lower class outright
 whose item a `createItem` and an upsert stating `confidential` make in one
 migration).
 
-**What is reported.** A replayed `upsertRevision` is reported for a field only
-when both of these hold:
+**What is reported.** Apart from `reorders` (below), a replayed
+`upsertRevision` is reported for a field only when both of these hold:
 
 1. the upsert itself loosened the field, against the item just before it;
 2. its migration left the item looser than it found it, comparing the
@@ -402,7 +402,7 @@ as its control), and `after` is the value the migration ends on
 An item absent at its migration's start is never compared, so labelling a new
 item in the migration that creates it is not a move
 (`::test_a_new_item_labelled_in_the_migration_that_creates_it_reports_no_move`).
-Only upserts are reported: a `changeSensitivity` that lowers and a
+Outside `reorders`, only upserts are reported: a `changeSensitivity` that lowers and a
 `restoreItem` that readmits are the sanctioned operations, and neither is
 (`::test_only_a_loosening_upsert_is_reported`).
 
@@ -411,6 +411,29 @@ item, or lowers and then restores it, is not reported. Its reviewer saw both
 operations, and its end is no looser than its start
 (`::test_a_migration_that_withdraws_and_reasserts_an_item_in_one_diff_is_not_reported`,
 `::test_an_upsert_lowering_that_a_later_operation_restores_is_not_reported`).
+
+**`reorders` (GHSA-wwq9-p8wq-5m68).** A migration declaring `dependsOn`
+replays after every one declaring none, whatever the ids. So, before each
+migration replays, each `status` and `sensitivity` is attributed to the
+largest-id migration that has written it, by any label write, at the level it
+left it; a smaller-id write never takes the
+attribution, whatever its effect. A smaller-id migration that found the field
+at or above that level and ends it below, by the floors' predicates, is a
+`reorders` row whatever it wrote, `undoes` naming the attributed migration
+(`test_reorders_report.py::test_validate_and_apply_report_the_dependson_migration_as_reordering_the_later_id`,
+a `changeSensitivity` and a `restoreItem`;
+`::test_a_lowering_after_a_tightening_replaying_after_an_accepted_raise_reports_a_real_loosening`,
+a smaller-id raise that takes no attribution). It replaces an `undoes` or
+`lowers` row for the same migration, item and field
+(`::test_an_upsert_that_is_both_undoes_and_reordered_yields_one_reorders_row`,
+an `undoes` one); a `dependsOn` deprecation after a larger-id `restoreItem`
+tightens and is not reported (`::test_a_tightening_inversion_is_not_reported`).
+Its line ends "replays after `<undoes>`, a larger id, and undoes it"
+(`::test_the_text_report_names_the_migration_a_reorders_row_undoes`).
+Its `after` is where its own migration left the field, and a further smaller-id
+lowering that starts below the attributed level is not another `reorders` row
+(`::test_a_second_lowering_that_starts_already_below_is_not_a_second_row`), so
+read the item's current label, not `after`.
 
 **`propose accept` never introduces or re-attributes a report row.** The
 floors compare where the landed set ends with where the landed set and the
@@ -460,18 +483,27 @@ proposal left it, whatever the landed operation and whatever rows the landed
 set reports, and names the landed migration that last took it below that
 level (`application/permissive_moves.py :: loosened_after`, from
 `_refuse_a_landed_overwrite`). Its error says that migration would "loosen
-what it sets", and its remedy is the redraft below, naming it in `dependsOn`
+what it sets", and its remedy is the redraft below, naming it in `dependsOn`.
+That is the error for a loosening that adds or re-attributes no report row. One
+that would add a row the landed migrations alone do not report, a `reorders`
+row included, or would make a row the history already holds name a different
+migration in `undoes`, is refused first by the report check above: for
+instance, a smaller-id `dependsOn`
+lowering replaying after the proposal's raise, with no id larger than the
+proposal's having written the field
 (`test_accept_refuses_a_replay_order_overwrite.py::test_accept_refuses_and_names_the_overwriting_migration_and_the_route`).
 `::test_a_restatement_after_the_proposal_hides_no_later_loosening` refuses
 where a landed restatement of the proposal's label is followed by a landed
 `restoreItem` or `changeSensitivity` that loosens it, with both landed ids
 smaller, and both larger, than the proposal's, and its error names the
-loosening migration. Where a landed migration sets the field looser than the
+loosening migration, in the report check's words and in this check's
+respectively. Where a landed migration sets the field looser than the
 proposal does and a later one sets it back to the proposal's value, a
 `changeSensitivity` then another or a `restoreItem` then a `deprecateItem`,
-with both landed ids smaller, and both larger, than the proposal's, `accept`
-passes
-(`::test_a_loosening_after_the_proposal_that_a_landed_migration_raises_back_is_accepted`).
+`accept` passes with both landed ids larger than the proposal's
+(`::test_a_larger_id_loosening_that_a_landed_migration_raises_back_is_accepted`)
+and refuses the lowering's `reorders` row with both smaller
+(`::test_a_smaller_id_loosening_that_a_landed_migration_raises_back_is_refused_for_its_row`).
 As `theurian propose` writes the labels an update inherits (above), an honest
 update minted before a landed, larger-id declassification restates the old
 class and is refused too; its redraft, which inherits the lower class and
@@ -668,7 +700,7 @@ evidence and named by its file.
 | Command | `permissiveMoves` holds |
 | :-- | :-- |
 | `migrate validate` | The whole set, every time, from a replay into a throwaway database used only for the report. The `valid` verdict and the exit code do not depend on that replay. If it fails, `permissiveMoves` is `null` and `permissiveMovesUnavailable` carries the engine's own words; when it succeeds, that second key is absent. |
-| `migrate apply` | The upserts this run applied. A changed set has a new state hash, so it gets a fresh `theurian-state-<hash>.sqlite` and replays everything ([ADR-0007](../adr/0007-state-hash-partitioned-databases.md)); an apply with nothing pending reports `[]`. |
+| `migrate apply` | The rows of the migrations this run applied. A changed set has a new state hash, so it gets a fresh `theurian-state-<hash>.sqlite` and replays everything ([ADR-0007](../adr/0007-state-hash-partitioned-databases.md)); an apply with nothing pending reports `[]`. |
 
 Held by
 `::test_a_second_apply_with_nothing_pending_reports_none_while_validate_still_reports_the_row`,

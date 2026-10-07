@@ -1,7 +1,8 @@
 """The permissive-move report as ``migrate validate`` and ``migrate apply`` print it.
 
 Operator-side by decision (GHSA-v2qg-23fc-7fqp): a row names the labels an item
-held before the migration of an upsert that loosened it.
+held before the migration of an upsert that loosened it, or of any write that
+meets the ``reorders`` rule in ``PermissiveMove``.
 ``test_no_served_path_mentions_the_report`` holds ``permissiveMoves`` out of every
 file under ``mcp/`` and ``schemas/mcp/``.
 """
@@ -39,6 +40,8 @@ def _as_line(move: PermissiveMove) -> str:
         written = "last written by an earlier apply"
     elif move.kind == "undoes":
         written = f"undoes {move.undoes}"
+    elif move.kind == "reorders":
+        written = f"replays after {move.undoes}, a larger id, and undoes it"
     else:
         written = f"lowers what {move.undoes} set"
     return (

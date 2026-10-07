@@ -1,17 +1,20 @@
-"""Replayed ``upsertRevision`` operations that leave an item more permissive (GHSA-v2qg-23fc-7fqp).
+"""Replayed label writes that leave an item more permissive (GHSA-v2qg-23fc-7fqp, GHSA-wwq9).
 
 The accept floors compare at accept time, so a withdrawal merged after an accept
 but sorting before it replays first and is then undone by the accepted upsert's
 ``status`` / ``sensitivity``. Refusing that would stop histories that already
 apply, so the engine reports it instead and no exit code moves. A field is
 reported when an upsert itself loosened it and the upsert's migration, at its
-end, left it looser than the migration found it.
+end, left it looser than the migration found it. A migration is reported as
+``reorders`` when the field's largest-id writer before the migration has a larger id than
+the migration's own, the migration found the field at or above the level that writer left,
+and its end leaves it below that level, whatever operation wrote it.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Final, Literal
 
 from theurian.application.item_labels import is_lowering
@@ -21,7 +24,7 @@ from theurian.domain.knowledge import KnowledgeItem
 from theurian.domain.migration import ChangeSensitivity, CreateItem, DeprecateItem, RestoreItem
 
 LabelField = Literal["status", "sensitivity"]
-MoveKind = Literal["undoes", "lowers"]
+MoveKind = Literal["undoes", "lowers", "reorders"]
 
 _LABELS: Final[tuple[LabelField, ...]] = ("status", "sensitivity")
 
@@ -33,8 +36,13 @@ LabelWrite = CreateItem | DeprecateItem | RestoreItem | ChangeSensitivity
 class PermissiveMove:
     """One label an ``upsertRevision`` loosened, on an item its migration left looser.
 
+    ``reorders`` is the other source (GHSA-wwq9): the field's largest-id writer before the
+    migration has a larger id than the migration's own, the migration found the field at or
+    above the level that writer left, and its end leaves it below. ``undoes`` then names that
+    writer, and any write can be the cause.
+
     ``before`` and ``after`` are the label at the migration's start and at its end.
-    ``undoes`` is the migration that last changed whether the item may surface
+    For the other rows, ``undoes`` is the migration that last changed whether the item may surface
     (status) or its class (sensitivity) before the upsert's migration. ``kind`` is
     decided by that change's effect, not its operation: ``undoes`` when it tightened
     the field -- status from surfaceable to not, sensitivity raised -- on an item that
@@ -127,11 +135,12 @@ class _Writer:
 
 @dataclass(frozen=True, slots=True)
 class _Held:
-    """An item as a migration found it, and who had written its labels."""
+    """An item as a migration found it, who had written its labels, and who held them."""
 
     migration_id: MigrationId
     item: KnowledgeItem
     writers: Mapping[LabelField, _Writer]
+    attributed: Mapping[LabelField, tuple[MigrationId, KnowledgeItem]]
 
 
 def _loosens(before: KnowledgeItem, after: KnowledgeItem, label: LabelField) -> bool:
@@ -146,6 +155,12 @@ def _loosens(before: KnowledgeItem, after: KnowledgeItem, label: LabelField) -> 
     return is_lowering(before.sensitivity, after.sensitivity)
 
 
+def _inverted(held: _Held, label: LabelField) -> bool:
+    """Whether a larger id than the migration holds the field."""
+    attributed = held.attributed.get(label)
+    return attributed is not None and attributed[0].value > held.migration_id.value
+
+
 def _value(item: KnowledgeItem, label: LabelField) -> KnowledgeStatus | Sensitivity:
     return item.status if label == "status" else item.sensitivity
 
@@ -158,6 +173,18 @@ def _labels_of(operation: LabelWrite) -> tuple[LabelField, ...]:
             return ("status",)
         case ChangeSensitivity():
             return ("sensitivity",)
+
+
+def _reordered(held: _Held, label: LabelField, end: KnowledgeItem) -> PermissiveMove | None:
+    """R2': the attributed id before the migration is larger, the migration found the field at
+    or above its level and ended below it."""
+    attributed = held.attributed.get(label)
+    if attributed is None or attributed[0].value <= held.migration_id.value:
+        return None
+    level = attributed[1]
+    if _loosens(level, held.item, label) or not _loosens(level, end, label):
+        return None
+    return replace(_row(held, label, end), undoes=attributed[0], kind="reorders")
 
 
 def _row(held: _Held, label: LabelField, end: KnowledgeItem) -> PermissiveMove:
@@ -190,8 +217,13 @@ class LabelWriters:
         # it (`None` when it found no such item), and as its latest label write left it.
         self._held: dict[ItemId, _Held | None] = {}
         self._latest: dict[ItemId, KnowledgeItem] = {}
-        # The fields an upsert in the current migration loosened, in replay order.
+        # The fields the current migration may report, in replay order: those an upsert loosened
+        # (`_by_upsert`) and those any other write loosened under a larger id's attribution.
         self._loosened: dict[tuple[ItemId, LabelField], _Held] = {}
+        self._by_upsert: set[tuple[ItemId, LabelField]] = set()
+        # R1: per item and label, the largest-id migration that wrote it, and the item as
+        # it left it. At most items x 2 entries.
+        self._attributed: dict[tuple[ItemId, LabelField], tuple[MigrationId, KnowledgeItem]] = {}
         self._written: dict[tuple[ItemId, LabelField], MigrationId] = {}
         self._overwrites: list[Overwrite] = []
 
@@ -215,10 +247,19 @@ class LabelWriters:
     ) -> None:
         """Record an operation that wrote a label; a ``createItem`` only when it created.
 
+        It is a row only as ``reorders``, at the migration's end.
+
         ``prior`` and ``landed`` are the item as the operation read it and as it wrote it.
         """
         held = self._track(migration_id, prior, landed)
         for label in _labels_of(operation):
+            if (
+                held is not None
+                and prior is not None
+                and _inverted(held, label)
+                and _loosens(prior, landed, label)
+            ):
+                self._loosened.setdefault((landed.item_id, label), held)
             self._record(migration_id, held, prior, landed, label)
 
     def upserted(
@@ -241,6 +282,7 @@ class LabelWriters:
             for label in _LABELS:
                 if _loosens(prior, landed, label):
                     self._loosened.setdefault((landed.item_id, label), held)
+                    self._by_upsert.add((landed.item_id, label))
         for label in _LABELS:
             self._record(migration_id, held, prior, landed, label)
 
@@ -259,6 +301,7 @@ class LabelWriters:
             self._held = {}
             self._latest = {}
             self._loosened = {}
+            self._by_upsert = set()
             self._written = {}
         item_id = landed.item_id
         if item_id not in self._held:
@@ -272,6 +315,11 @@ class LabelWriters:
                         label: self._last[item_id, label]
                         for label in _LABELS
                         if (item_id, label) in self._last
+                    },
+                    {
+                        label: self._attributed[item_id, label]
+                        for label in _LABELS
+                        if (item_id, label) in self._attributed
                     },
                 )
             )
@@ -288,12 +336,21 @@ class LabelWriters:
         return writes
 
     def _settled(self) -> list[PermissiveMove]:
-        """The current migration's rows: each noted field its end leaves looser than its start."""
-        return [
-            _row(held, label, self._latest[item_id])
-            for (item_id, label), held in self._loosened.items()
-            if _loosens(held.item, self._latest[item_id], label)
-        ]
+        """The current migration's rows: a reordered field, else an upsert's field its end
+        leaves looser than its start."""
+        rows: list[PermissiveMove] = []
+        for (item_id, label), held in self._loosened.items():
+            end = self._latest[item_id]
+            row = _reordered(held, label, end)
+            if (
+                row is None
+                and (item_id, label) in self._by_upsert
+                and _loosens(held.item, end, label)
+            ):
+                row = _row(held, label, end)
+            if row is not None:
+                rows.append(row)
+        return rows
 
     def _record(
         self,
@@ -318,6 +375,9 @@ class LabelWriters:
         totally ordered by ``DISCLOSURE_ORDER``: a changed value is a changed class.
         """
         self._written[landed.item_id, label] = migration_id
+        attributed = self._attributed.get((landed.item_id, label))
+        if attributed is None or migration_id.value >= attributed[0].value:
+            self._attributed[landed.item_id, label] = (migration_id, landed)
         tightened = prior is not None and _loosens(landed, prior, label)
         if (
             prior is not None

@@ -1311,7 +1311,8 @@ def test_propose_accept_does_not_print_the_report(
 
 
 #: Every spelling of the report in code: the payload key, the module, the row type,
-#: the writer map, the renderer module, the overwrite row and its finder.
+#: the writer map, the renderer module, the overwrite row and its finder, and the
+#: ``reorders`` kind's spelling.
 _REPORT_SPELLINGS: Final = (
     "permissiveMoves",
     "permissive_moves",
@@ -1320,6 +1321,7 @@ _REPORT_SPELLINGS: Final = (
     "permissive_move_report",
     "Overwrite",
     "loosened_after",
+    '"reorders"',
 )
 
 _REPO: Final = Path(__file__).resolve().parents[4]

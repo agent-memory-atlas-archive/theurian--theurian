@@ -161,7 +161,9 @@ class ApplyReport:
     #: never changed, and a full replay idempotent.
     withdrawn_candidates: list[WithdrawalCandidate] = field(default_factory=list)
     #: The labels an upsert this apply ran loosened, on items the upsert's migration left
-    #: looser at its end than it found them, in replay order (GHSA-v2qg-23fc-7fqp).
+    #: looser at its end than it found them, and those a migration ended below the level of the
+    #: field's largest-id writer before the migration, that id being larger than its own, after
+    #: finding it at or above that level, in replay order (GHSA-v2qg-23fc-7fqp, GHSA-wwq9).
     #: Reported, never refused.
     permissive_moves: list[PermissiveMove] = field(default_factory=list)
     #: In replay order, for ``accept``.

@@ -12,27 +12,81 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.5.2] - 2026-10-06
+
+### Security
+
+- **A landed migration declaring `dependsOn` replayed after a proposal
+  accepted later and undid its label, so content the proposal withheld could
+  be served** (**CRITICAL.** The advisory id is
+  [GHSA-wwq9-p8wq-5m68](https://github.com/theurian/theurian/security/advisories/GHSA-wwq9-p8wq-5m68);
+  T-28 in [the threat model](../../docs/security/threat-model.md) carries the
+  residuals). Affects 0.5.1 and every earlier release.
+
+  Such a migration replays after every one declaring none, whatever the ids,
+  so such a `changeSensitivity` or `restoreItem` with a smaller id than the
+  proposal turned its raise to `confidential` back to `internal`, or its
+  deprecation back to `approved`, and `knowledge.get` served the item at the
+  default ceiling. `accept` refused nothing; `migrate validate` reported nothing.
+
+  **Fixed in two parts.** `theurian propose accept` refuses it, through the
+  report-row check for the `reorders` row it would add and an end-state check
+  for any other loosening, judged as the `accept` floors judge it
+  (*Changed*, below). Every other route, such as a
+  hand-authored migration landed by file, runs no `accept`: `migrate validate`
+  and `migrate apply` report it as `kind: "reorders"` (*Added*, below), so it
+  is detected, not prevented. After upgrading, run `theurian migrate validate`
+  once: `migrate apply` reports `[]` for a set an earlier Core applied.
+
 ### Changed
 
 - **BREAKING — `theurian propose accept` refuses a proposal that a landed
-  migration replaying after it would loosen.** Old shape: exit 0, and after
+  migration replaying after it would loosen.** Old shape: for a landed
+  `changeSensitivity` or `restoreItem`, exit 0, and after
   `theurian migrate apply` the item held the `status` or `sensitivity` the
   landed migration wrote, not the one the proposal set. New shape: when the
   replay of the landed migrations with the proposal leaves a `status` or
   `sensitivity` the proposal wrote looser than the proposal left it, judged as
   the `accept` floors judge it (the sensitivity class; whether the status is
   surfaceable), `accept` exits 1 and moves nothing, whatever the landed
-  migration's operation or id. The error reads "Accepting this proposal would
-  let the landed migration '<id>' loosen what it sets, …" and names the item
-  and the field; the remedy is the redraft the report-row refusal routes,
-  naming `dependsOn: [<id>]`. The check runs after the report-row check, so
-  that check's refusals keep their words. Two honest histories are refused
+  migration's operation or id. When the accept would add a report row for
+  that landed migration, one the landed migrations alone do not report,
+  `reorders` rows now included, or would make a row the history already holds
+  name a different migration in `undoes`, the report-row check, which runs
+  first, refuses it: "Accepting
+  this proposal would make the landed migration <id> move '<item>' <field>
+  from <before> to <after>, undoing what this proposal sets: this proposal's
+  migration replays before it." A loosening that does neither, as a larger id's
+  `changeSensitivity` or `restoreItem`, meets a new end-state check after it:
+  "Accepting this proposal would let the landed migration '<id>' loosen what
+  it sets, …". Each remedy names `dependsOn: [<id>]`. Two honest histories are refused
   too: a content update drafted before a landed declassification with a larger
   id, because a drafted update states the class it inherits (its redraft
   inherits the new class and, declaring the named `dependsOn`, is accepted);
   and a deprecation drafted before a landed update that re-approves the item,
   which `accept` passed when a landed deprecation had already retired the item
   where the proposal replays.
+- **BREAKING — `theurian propose accept` refuses a proposal whose accept
+  would add a `reorders` row the landed migrations alone do not report, or
+  would make one the history already holds name a different migration in
+  `undoes`, even when the field ends where the proposal left it**: for
+  instance, a smaller-id `changeSensitivity` declaring `dependsOn` that lowers
+  the proposal's raise and that a smaller-id landed migration raises back,
+  with no id larger than the proposal's having written the field. Old shape:
+  0.5.1 accepted that example. New shape: exit 1, nothing moved, "Accepting this proposal
+  would make the landed migration <id> move '<item>' <field> from <before> to
+  <after>, undoing what this proposal sets: this proposal's migration replays
+  before it.", and a remedy naming `dependsOn: [<the lowering migration>]`.
+
+### Added
+
+- **`kind: "reorders"` in `permissiveMoves`**, which can report a write of any
+  kind, the sanctioned `changeSensitivity` and `restoreItem` included; when it
+  does is stated under `reorders` in
+  [the migration format](../../docs/protocol/migrations.md#permissive-moves-are-reported-not-refused).
+  Its text line ends "replays after `<undoes>`, a larger id, and undoes it".
 
 ## [0.5.1] - 2026-10-05
 
@@ -10991,7 +11045,8 @@ error is the one reading the release notes to decide whether to upgrade.
 - Migration `contentFile` paths are rejected at both schema and runtime level if
   they escape the project root.
 
-[Unreleased]: https://github.com/theurian/theurian/compare/core-v0.5.1...main
+[Unreleased]: https://github.com/theurian/theurian/compare/core-v0.5.2...main
+[0.5.2]: https://github.com/theurian/theurian/compare/core-v0.5.1...core-v0.5.2
 [0.5.1]: https://github.com/theurian/theurian/compare/core-v0.5.0...core-v0.5.1
 [0.5.0]: https://github.com/theurian/theurian/compare/core-v0.4.0...core-v0.5.0
 [0.4.0]: https://github.com/theurian/theurian/compare/core-v0.3.0...core-v0.4.0

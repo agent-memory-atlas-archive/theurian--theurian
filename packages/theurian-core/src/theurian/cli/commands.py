@@ -2292,12 +2292,16 @@ def migrate_validate(as_json: JsonOption = False) -> None:
     root, and has a valid application order.
 
     It replays the whole set into a throwaway database for `permissiveMoves`,
-    a report and never a refusal: one row per replayed `upsertRevision` that
+    a report and never a refusal: outside `reorders`, one row per `upsertRevision` that
     loosened an item's `status` or `sensitivity`, on an item its migration left
     looser at its end than at its start. `undoes` names the migration that last
     changed whether the item may surface (`status`) or its class (`sensitivity`)
     before that migration; `kind` is `undoes` when that change tightened the
-    field, whatever operation made it, and `lowers` otherwise.
+    field, whatever operation made it, and `lowers` otherwise. `kind` is
+    `reorders`, for any write, when the largest id to have written the field
+    before the migration is larger than its own and the migration took the field
+    from at or above that id's level (whether the item may surface, or its class) to below
+    it; `undoes` names that id, and the row replaces the migration's upsert row for the field.
     Neither `valid` nor the exit code depends on that replay; when it fails,
     the report says why instead (`permissiveMovesUnavailable` under `--json`).
 
@@ -2528,13 +2532,18 @@ def migrate_apply(  # noqa: PLR0911, PLR0912 -- one early return (and now one br
     Idempotent: applying an unchanged set again reports zero applied and changes
     nothing (FR-K8).
 
-    Prints `permissiveMoves`, a report and never a refusal: one row per
+    Prints `permissiveMoves`, a report and never a refusal: outside `reorders`, one row per
     `upsertRevision` this run applied that loosened an item's `status` or
     `sensitivity`, on an item its migration left looser at its end than at its
     start. `undoes` names the migration that last changed whether the item may
     surface (`status`) or its class (`sensitivity`) before that migration; `kind`
     is `undoes` when that change tightened the field, whatever operation made it,
-    and `lowers` otherwise. The exit code does not depend on it.
+    and `lowers` otherwise. `kind` is `reorders`, for any write this run applied,
+    when the largest id to have written the field before the migration is larger
+    than its own and the migration took the field from at or above that id's
+    level (whether the item may surface, or its class) to below it; `undoes` names that id,
+    and the row replaces the migration's upsert row for the field. The exit code does not depend
+    on it.
 
     **One critical section spans every write this command makes (issue #468,
     round two).** The first shape shipped here held `create_database` and

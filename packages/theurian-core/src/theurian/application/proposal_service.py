@@ -1454,7 +1454,7 @@ class ProposalService:
         landed = tuple(self._landed_migrations())
         _refuse_a_reported_upsert(location, document, held_moves, union, landed)
         # Second, so every refusal the report check makes keeps its words: this adds the
-        # landed writers no report row shows, sanctioned operations among them.
+        # landed writers no report row shows, a larger id's among them.
         _refuse_a_landed_overwrite(location, document, union, landed)
 
         accepted = self._commit(proposal_id, moves, migration_file, migration_bytes, destination)
