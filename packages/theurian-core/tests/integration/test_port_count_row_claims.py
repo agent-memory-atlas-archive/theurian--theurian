@@ -52,9 +52,8 @@ document it snapshots is ``tools/corpus_drift.py``'s.
 twice, so it states which side of the frozen corpus each walk reaches.
 
 - The population walk is ``git grep`` under the row's own pathspec, and
-  ``.theurian/knowledge/`` is **IN** -- that is the point of the measurement,
-  since two of the eleven lines are the re-seeded twin's body and two more are
-  the superseded revision's. The row's stated exclusion,
+  ``.theurian/knowledge/`` is **IN** -- that is the point of the measurement.
+  The row's stated exclusion,
   ``:!packages/theurian-core/tests/``, is applied because the row applies it,
   not because this module has an opinion about it.
 - The migrations walk is ``git ls-files --cached`` over ``*.yaml`` **directly**
@@ -883,10 +882,13 @@ def test_a_population_key_carrying_an_unlisted_flag_is_refused_before_it_runs(
 def test_the_port_count_row_names_the_twins_current_revision() -> None:
     """RED means the roadmap names a revision of the twin that is no longer current.
 
-    The row records the #557 re-seed as ``migration X supersedes revision Y with
-    Z``, and all three are derived here from the tracked migrations rather than
-    trusted. The next re-seed of ``architecture.ports-and-adapters`` makes this
-    RED, which is precisely when the row has to move: an audit row naming a
+    The row records the latest re-seed, #832's, as ``migration X supersedes
+    revision Y with Z``, and all three are derived here from the tracked
+    migrations rather than trusted. The row holds exactly one such match (``_one``
+    requires it); #557's earlier re-seed stays in the row as history in a
+    different shape ("its migration ... replaced revision ..."), which this pin
+    does not read. The next re-seed of ``architecture.ports-and-adapters`` makes
+    this RED, which is precisely when the row has to move: an audit row naming a
     superseded revision as the current one sends a reader to a body the default
     index does not serve.
 
