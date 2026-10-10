@@ -36,6 +36,7 @@ from label_inheritance_support import (
     labelled_project,
     land_deprecation,
     landing_zone,
+    reclassification,
 )
 
 from theurian.application import item_labels
@@ -228,7 +229,7 @@ def test_the_own_row_remedy_names_dependson_when_the_landed_restore_declares_it(
     assert not re.search(r"accept[^.]*again", remedy, re.IGNORECASE), payload
 
 
-def test_the_own_row_remedy_authors_every_kind_of_a_proposal_carrying_a_non_content_one(
+def test_the_own_row_remedy_keeps_every_kind_of_a_proposal_carrying_a_non_content_one(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Naming ``theurian propose`` for a proposal that also changes an owner would send
@@ -248,11 +249,8 @@ def test_the_own_row_remedy_authors_every_kind_of_a_proposal_carrying_a_non_cont
     assert drafted["migrationId"] in str(payload.get("error", "")), payload
     assert restore_id in str(payload.get("error", "")), payload
     remedy = str(payload.get("remedy", ""))
-    assert (
-        "Author the changeOwner and createItem and upsertRevision operations as a migration"
-        in remedy
-    ), payload
-    assert "theurian propose" not in remedy, payload
+    assert f"this proposal's migration file in {drafted['proposalDirectory']}/" in remedy, payload
+    assert "`theurian propose`" not in remedy, payload
 
 
 def _land_unrelated(project: LabelledProject, operation: dict[str, Any]) -> str:
@@ -492,6 +490,42 @@ def test_a_redraft_after_two_dependent_restores_names_both_and_lands(
     assert code == 0, fresh
 
     _edit_dependson_into(project, fresh, [first, second])
+    accepted_code, accepted = cli("propose", "accept", fresh["proposalId"])
+    cli_ok("migrate", "apply")
+
+    assert accepted_code == 0, accepted
+    assert cli_ok("migrate", "validate")["permissiveMoves"] == []
+
+
+def test_the_remedy_names_the_landed_writer_of_each_field_the_upsert_loosens(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The upsert loosens status and sensitivity, and a different landed migration re-sets each.
+
+    The sensitivity writer declares ``dependsOn`` and an id past the drafting clock, so
+    a redraft depending on the status writer alone still replays before it: a remedy
+    naming the writers of one refused field sends the reader back into the refusal.
+    """
+    project = create_only_project(tmp_path, monkeypatch, sensitivity="confidential")
+    land_deprecation(project.root, SORTS_BEFORE_A_DRAFT, project.item_id)
+    drafted = _mcp_draft(project, tmp_path)
+    restore_id = _restore(project)
+    (project.root / f".theurian/migrations/{SORTS_AFTER_A_DRAFT}-reclassify.yaml").write_text(
+        reclassification(SORTS_AFTER_A_DRAFT, project.item_id, "internal")
+        + f"dependsOn: [{restore_id}]\n"
+    )
+    cli_ok("migrate", "apply")
+
+    code, payload = cli("propose", "accept", drafted["proposalId"])
+
+    assert code == 1, payload
+    assert f"dependsOn: [{restore_id}, {SORTS_AFTER_A_DRAFT}]" in payload["remedy"], payload
+    code, fresh = cli_propose(project, project.item_id)
+    assert code == 0, fresh
+    _edit_dependson_into(project, fresh, [restore_id])
+    assert cli("propose", "accept", fresh["proposalId"])[0] == 1, "the status writer alone"
+
+    _edit_dependson_into(project, fresh, [restore_id, SORTS_AFTER_A_DRAFT])
     accepted_code, accepted = cli("propose", "accept", fresh["proposalId"])
     cli_ok("migrate", "apply")
 

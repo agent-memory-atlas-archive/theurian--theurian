@@ -34,6 +34,7 @@ from label_inheritance_support import (
     cli,
     cli_ok,
     cli_propose,
+    deprecation,
     item_row,
     labelled_project,
     land_deprecation,
@@ -41,6 +42,7 @@ from label_inheritance_support import (
     landing_zone,
     proposals_tree,
 )
+from replay_order_support import OTHER_ITEM, create_other, depending_on, write
 
 from theurian.daemon.runner import build_server
 
@@ -92,6 +94,7 @@ def _landed_update(
     land_between: Callable[[], None] | None = None,
     depends_on: list[str] | None = None,
     migration_id: str | None = None,
+    target: tuple[str, str | None] = (ITEM_ID, ROOT_REVISION_ID),
 ) -> dict[str, Any]:
     """A CLI content update drafted now, accepted and applied: its id sorts after earlier drafts.
 
@@ -105,9 +108,9 @@ def _landed_update(
     way, as one that sorts after every draft to come.
     """
     time.sleep(0.05)
-    code, drafted = cli_propose(
-        project, project.item_id, "--expected-revision", ROOT_REVISION_ID, *extra
-    )
+    item_id, expected = target
+    pin = ("--expected-revision", expected) if expected else ()
+    code, drafted = cli_propose(project, item_id, *pin, *extra)
     assert code == 0, drafted
     if depends_on is not None:
         staged = Path(project.root / drafted["proposalDirectory"] / drafted["migrationFile"])
@@ -139,9 +142,9 @@ def _report() -> list[dict[str, Any]]:
 def _refusal_names(
     payload: dict[str, Any], landed_id: str, *names: str, moved: tuple[str, str] | None = None
 ) -> None:
-    """The refusal names the landed migration and its row; the remedy never says "accept again".
+    """The refusal names the landed migration and its row; no remedy says "accept again" unedited.
 
-    Accepting the same proposal again re-enters the refusal, so a remedy that
+    Accepting the same proposal again unedited re-enters the refusal, so a remedy that
     says so must fail. ``moved`` is ``(before, after)`` of the landed row: the
     error states them in that order, and membership alone would pass a swap.
     The refused proposals here are migrations, never content, so ``theurian
@@ -154,8 +157,9 @@ def _refusal_names(
         assert f"from {moved[0]} to {moved[1]}" in error, payload
     remedy = str(payload.get("remedy", ""))
     assert landed_id in remedy, payload
-    assert "theurian propose" not in remedy, payload
-    assert not re.search(r"accept[^.]*again", remedy, re.IGNORECASE), payload
+    assert "`theurian propose`" not in remedy and "migrate apply" not in remedy, payload
+    if not remedy.startswith("Nothing has moved. Edit `dependsOn: ["):
+        assert not re.search(r"accept[^.]*again", remedy, re.IGNORECASE), payload
 
 
 # -- the face: a withdrawal accepted after a later-minted update landed --------------
@@ -252,8 +256,8 @@ def test_a_sensitivity_raises_remedy_routes_to_a_hand_authored_migration(
 ) -> None:
     """Neither ``generateMigrationDraft`` nor ``theurian propose`` can draft ``changeSensitivity``.
 
-    The only route left is the one ``generateMigrationDraft``'s own refusal
-    gives: author the operation as a migration, then ``theurian migrate apply``.
+    The route left edits ``dependsOn`` into this proposal's own file and accepts it
+    again, which re-checks it; ``theurian migrate apply`` would re-check nothing.
     """
     project = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
     raise_ = _mcp_migration_draft(
@@ -267,8 +271,8 @@ def test_a_sensitivity_raises_remedy_routes_to_a_hand_authored_migration(
 
     assert code == 1, payload
     remedy = str(payload.get("remedy", ""))
-    assert re.search(r"author[^.]*changeSensitivity[^.]*migration", remedy, re.IGNORECASE), payload
-    assert "theurian propose" not in remedy, payload
+    assert "this proposal's migration file" in remedy and "migrate apply" not in remedy, payload
+    assert "`theurian propose`" not in remedy, payload
     assert "generateMigrationDraft" not in remedy, payload
 
 
@@ -535,8 +539,8 @@ def test_a_withdrawal_that_restores_first_is_refused_when_it_would_take_over_an_
         moved=("deprecated", "approved"),
     )
     remedy = str(payload.get("remedy", ""))
-    assert "restoreItem" in remedy and "deprecateItem" in remedy, payload
-    assert "Author the " in remedy and "`theurian migrate apply`" in remedy, payload
+    assert "this proposal's migration file" in remedy and "Author the " not in remedy, payload
+    assert "`theurian propose accept`" in remedy, payload
     assert landing_zone(project.root) == before, "a refused accept moved files"
     cli_ok("migrate", "apply")
     assert _report() == rows_before
@@ -604,3 +608,57 @@ def test_a_stale_withdrawal_minted_before_a_landed_reapproval_is_refused(
     assert f"dependsOn: [{update['migrationId']}]" in str(payload["remedy"]), payload
     cli_ok("migrate", "apply")
     assert _report() == rows_before
+
+
+def test_the_remedy_of_a_refusal_with_no_own_row_names_the_writers_of_every_re_attributed_item(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A remedy naming only the first pair's writers is refused again, the rest replaying later."""
+    project = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+    write(
+        project.root,
+        y_born := SORTS_BEFORE_A_DRAFT[:-1] + "F",
+        "y",
+        create_other(y_born, OTHER_ITEM),
+    )
+    cli_ok("migrate", "apply")
+    staged = _deprecate_draft(project, tmp_path)
+    path = Path(project.root / staged["proposalDirectory"] / staged["migrationFile"])
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    document["operations"] = [{"op": "restoreItem", "itemId": i} for i in (ITEM_ID, OTHER_ITEM)]
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    ids = [f"7ZZZZZZZZZ01234567890AAAA{n}" for n in range(4)]
+
+    def land_after(item: str, early: str, late: str, update: str, *deps: str) -> Callable[[], None]:
+        def land() -> None:
+            text = deprecation(late, item)
+            write(project.root, late, "d", depending_on(text, *deps) if deps else text)
+            if deps:
+                (file,) = project.root.glob(f".theurian/migrations/{update}-*.yaml")
+                file.write_text(depending_on(file.read_text(encoding="utf-8"), late))
+            land_deprecation(project.root, early, item)
+
+        return land
+
+    dx, ux, dy, uy = ids
+    _landed_update(
+        project, migration_id=ux, land_between=land_after(ITEM_ID, SORTS_BEFORE_A_DRAFT, dx, ux)
+    )
+    _landed_update(
+        project,
+        target=(OTHER_ITEM, None),
+        migration_id=uy,
+        land_between=land_after(OTHER_ITEM, y_born[:-1] + "G", dy, uy, y_born),
+    )
+    rows_before = _report()
+
+    code, refused = cli("propose", "accept", staged["proposalId"])
+    named = re.search(r"`dependsOn: \[([^\]]*)\]`", str(refused["remedy"]))
+    assert code == 1 and named and set(ids) <= set(named[1].split(", ")), refused
+    document["dependsOn"] = named[1].split(", ")
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    code, accepted = cli("propose", "accept", staged["proposalId"])
+    cli_ok("migrate", "apply")
+
+    assert code == 0, accepted
+    assert len(rows_before) == 2 and _report() == rows_before

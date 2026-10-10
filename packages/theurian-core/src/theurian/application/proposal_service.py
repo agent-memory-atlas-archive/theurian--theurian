@@ -4555,18 +4555,36 @@ _STATUS_WRITERS = (CreateItem, UpsertRevision, DeprecateItem, RestoreItem)
 _SENSITIVITY_WRITERS = (CreateItem, UpsertRevision, ChangeSensitivity)
 
 
-def _writes(migration: Migration, move: PermissiveMove) -> bool:
-    """Whether ``migration`` has an operation that sets ``move``'s field on its item.
+def _writes(migration: Migration, item_id: ItemId, field: str) -> bool:
+    """Whether ``migration`` has an operation that sets ``field`` on ``item_id``.
 
     Derived from the loaded landed migrations' operations: the replay records
     which migration last wrote a field only for the rows it reports, not for each
     (item, field).
     """
-    writers = _STATUS_WRITERS if move.field == "status" else _SENSITIVITY_WRITERS
+    writers = _STATUS_WRITERS if field == "status" else _SENSITIVITY_WRITERS
     return any(
-        isinstance(operation, writers) and operation.item_id == move.item_id
+        isinstance(operation, writers) and operation.item_id == item_id
         for operation in migration.operations
     )
+
+
+def _writers_replaying_after(
+    incoming: MigrationId | None,
+    fields: set[tuple[ItemId, str]],
+    union: Replay,
+    landed_migrations: tuple[Migration, ...],
+) -> list[Migration]:
+    """Landed writers of ``fields`` replaying after ``incoming``: a redraft depending on only the
+    first still replays before the rest. An ``incoming`` outside the replay fails safe, naming
+    every landed writer."""
+    position = {migration_id: index for index, migration_id in enumerate(union.order)}
+    start = -1 if incoming is None else position.get(incoming, -1)
+    return [
+        m
+        for m in sorted(landed_migrations, key=lambda m: position[m.migration_id])
+        if position[m.migration_id] > start and any(_writes(m, i, f) for i, f in fields)
+    ]
 
 
 def _refuse_a_reported_upsert(
@@ -4603,6 +4621,10 @@ def _refuse_a_reported_upsert(
     if not introduced:
         return
     incoming = _migration_id_or_none(document.get("id"))
+    refused: set[tuple[ItemId, str]] = {(m.item_id, m.field) for m in introduced} | {
+        (o.item_id, o.field) for o in loosened_after(union.overwrites, incoming)
+    }
+    writers = _writers_replaying_after(incoming, refused, union, landed_migrations)
     row = next((move for move in introduced if move.migration_id == incoming), None)
     if row is None:
         row = introduced[0]
@@ -4613,17 +4635,12 @@ def _refuse_a_reported_upsert(
             "replays before it.",
             remedy=_redraft_remedy(
                 _kinds_of(document),
-                row.migration_id.value,
-                [m for m in landed_migrations if m.migration_id == row.migration_id],
+                ", ".join(m.migration_id.value for m in writers),
+                writers,
                 location,
             ),
         )
-    after = set(union.order[union.order.index(row.migration_id) + 1 :])
-    later = [
-        m.migration_id.value
-        for m in sorted(landed_migrations, key=lambda m: union.order.index(m.migration_id))
-        if m.migration_id in after and _writes(m, row)
-    ]
+    later = [m.migration_id.value for m in writers]
     landed = "the landed migration" if len(later) == 1 else "the landed migrations"
     raise ProposalError(
         f"Accepting this proposal would leave `theurian migrate validate` reporting its "
@@ -4633,7 +4650,7 @@ def _refuse_a_reported_upsert(
         remedy=_redraft_remedy(
             _kinds_of(document),
             ", ".join(later),
-            [m for m in landed_migrations if m.migration_id.value in later],
+            writers,
             location,
         ),
     )
@@ -4657,6 +4674,9 @@ def _refuse_a_landed_overwrite(
         return
     first = overwrites[0]
     later = list(dict.fromkeys(o.migration_id.value for o in overwrites))
+    writers = _writers_replaying_after(
+        incoming, {(o.item_id, o.field) for o in overwrites}, union, landed_migrations
+    )
     landed = "the landed migration" if len(later) == 1 else "the landed migrations"
     raise ProposalError(
         f"Accepting this proposal would let {landed} {_names(later)} loosen what it sets, "
@@ -4665,8 +4685,8 @@ def _refuse_a_landed_overwrite(
         f"{first.after.value}.",
         remedy=_redraft_remedy(
             _kinds_of(document),
-            ", ".join(later),
-            [m for m in landed_migrations if m.migration_id.value in later],
+            ", ".join(m.migration_id.value for m in writers),
+            writers,
             location,
         ),
     )
@@ -4686,10 +4706,11 @@ def _redraft_remedy(
     after: list[Migration],
     location: _ProposalLocation,
 ) -> str:
-    """The remedy for a refusal whose cure is a fresh migration replaying after a landed one.
+    """The remedy for a refusal cured by a migration replaying after the landed ones it names.
 
     Routed by every kind the proposal carries: a tool is named only when it can draft
-    all of them, else the whole proposal is authored by hand.
+    all of them, else the reader edits this proposal's own file and accepts it again,
+    which re-checks it; applying a hand-authored migration directly re-checks nothing.
     Replay order alone does not place a fresh draft after a landed migration, so every
     route names ``dependsOn``.
     Built by concatenation: the ids are validated MigrationIds, the rest constants.
@@ -4715,16 +4736,15 @@ def _redraft_remedy(
             + " in its document."
         )
     else:
-        route = (
-            "Author the "
-            + " and ".join(sorted(kinds))
-            + (" operations" if len(kinds) > 1 else " operation")
-            + " as a migration that replays after "
+        return (
+            "Nothing has moved. Edit "
+            + depends
+            + " into this proposal's migration file in "
+            + location.relative
+            + "/, so it replays after "
             + after_what
             + only_through
-            + ", declaring "
-            + depends
-            + ", and apply it with `theurian migrate apply` once a human has reviewed it."
+            + ", then run `theurian propose accept` again."
         )
     return "Nothing has moved. " + route + " Then delete " + location.relative + "/."
 

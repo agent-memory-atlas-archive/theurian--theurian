@@ -33,7 +33,7 @@ _CLI = sorted(k.value for k in _REFUSED_TO_CLI)
 
 _PROPOSE = "`theurian propose`"
 _GENERATE = "`knowledge.generateMigrationDraft`"
-_APPLY = "`theurian migrate apply`"
+_ACCEPT = "`theurian propose accept`"
 
 _ROOT = MigrationId("01K2AAAAAAAAAAAAAAAAAAAAAA")
 _DEPENDENT = MigrationId("01K2BBBBBBBBBBBBBBBBBBBBBB")
@@ -66,19 +66,19 @@ def _route_of(kinds: set[str]) -> str:
     return "author"
 
 
-def _assert_route(remedy: str, route: str, kinds: set[str]) -> None:
+def _assert_route(remedy: str, route: str) -> None:
     assert remedy.startswith("Nothing has moved. "), remedy
-    assert remedy.endswith(" Then delete .theurian/proposals/p1/."), remedy
-    assert not re.search(r"accept[^.]*again", remedy, re.IGNORECASE), remedy
-    assert ("theurian propose" in remedy) is (route == "propose"), remedy
-    assert ("knowledge.generateMigrationDraft" in remedy) is (route == "generate"), remedy
-    assert ("theurian migrate apply" in remedy) is (route == "author"), remedy
+    assert (_PROPOSE in remedy) is (route == "propose"), remedy
+    assert (_GENERATE in remedy) is (route == "generate"), remedy
+    assert (_ACCEPT in remedy) is (route == "author"), remedy
+    assert "migrate apply" not in remedy, remedy
     if route == "author":
-        assert "Author the " in remedy, remedy
-        for kind in kinds:
-            assert kind in remedy, (kind, remedy)
-        noun = "operations" if len(kinds) > 1 else "operation"
-        assert f" {noun} as a migration that replays after " in remedy, remedy
+        assert "this proposal's migration file in .theurian/proposals/p1/" in remedy, remedy
+        assert "Author the " not in remedy, remedy
+        assert remedy.endswith(f", then run {_ACCEPT} again."), remedy
+    else:
+        assert remedy.endswith(" Then delete .theurian/proposals/p1/."), remedy
+        assert not re.search(r"accept[^.]*again", remedy, re.IGNORECASE), remedy
 
 
 def test_the_kind_sets_are_disjoint_and_non_empty() -> None:
@@ -90,40 +90,39 @@ def test_the_kind_sets_are_disjoint_and_non_empty() -> None:
 def test_a_content_only_proposal_is_sent_to_theurian_propose() -> None:
     kinds = set(_CONTENT)
 
-    _assert_route(_remedy(kinds), "propose", kinds)
+    _assert_route(_remedy(kinds), "propose")
 
 
 @pytest.mark.parametrize("kind", _CONTENT)
 def test_each_content_kind_alone_is_sent_to_theurian_propose(kind: str) -> None:
-    _assert_route(_remedy({kind}), "propose", {kind})
+    _assert_route(_remedy({kind}), "propose")
 
 
 @pytest.mark.parametrize("kind", _V1)
 def test_each_v1_kind_alone_is_sent_to_generate_migration_draft(kind: str) -> None:
-    _assert_route(_remedy({kind}), "generate", {kind})
+    _assert_route(_remedy({kind}), "generate")
 
 
 @pytest.mark.parametrize("kind", _CLI)
-def test_each_cli_kind_alone_is_authored_and_applied_by_a_human(kind: str) -> None:
+def test_each_cli_kind_alone_is_edited_into_its_own_file_and_accepted_again(kind: str) -> None:
     remedy = _remedy({kind})
 
-    _assert_route(remedy, "author", {kind})
-    assert f"Author the {kind} operation as a migration that replays after THE-LANDED-ID" in remedy
-    assert "once a human has reviewed it" in remedy
+    _assert_route(remedy, "author")
+    assert "/, so it replays after THE-LANDED-ID only through its `dependsOn`, then" in remedy
 
 
-def test_a_restore_then_deprecate_proposal_is_authored_naming_both_kinds() -> None:
+def test_a_restore_then_deprecate_proposal_is_edited_in_its_own_file() -> None:
     """Face 4: authoring ``restoreItem`` alone readmits where the proposal withdrew."""
     kinds = {"restoreItem", "deprecateItem"}
 
-    _assert_route(_remedy(kinds), "author", kinds)
+    _assert_route(_remedy(kinds), "author")
 
 
-def test_an_upsert_with_a_v1_kind_is_authored_naming_both_kinds() -> None:
+def test_an_upsert_with_a_v1_kind_is_edited_in_its_own_file() -> None:
     """``generateMigrationDraft`` refuses content; ``theurian propose`` cannot draft the v1 kind."""
     kinds = {"upsertRevision", "deprecateItem"}
 
-    _assert_route(_remedy(kinds), "author", kinds)
+    _assert_route(_remedy(kinds), "author")
 
 
 _PAIRS = [set(pair) for pair in combinations(sorted(_CONTENT + _V1 + _CLI), 2)]
@@ -134,7 +133,7 @@ def test_every_pair_of_kinds_is_routed_to_a_tool_that_can_draft_all_of_it(
     kinds: set[str],
 ) -> None:
     """The population is every unordered pair of the live kind constants, none picked."""
-    _assert_route(_remedy(kinds), _route_of(kinds), kinds)
+    _assert_route(_remedy(kinds), _route_of(kinds))
 
 
 _ALL_CASES = [
@@ -147,7 +146,7 @@ _ALL_CASES = [
 _FORMS = {
     "propose": r"edit `dependsOn: \[{ids}\]` into the drafted migration file",
     "generate": r"with `dependsOn: \[{ids}\]` in its document",
-    "author": r"declaring `dependsOn: \[{ids}\]`",
+    "author": r"Edit `dependsOn: \[{ids}\]` into this proposal's migration file",
 }
 
 
@@ -176,7 +175,7 @@ def test_dependson_names_every_landed_migration_whether_or_not_it_declares_one(
 
     assert re.search(_FORMS[_route_of(kinds)].format(ids=re.escape(ids)), remedy), remedy
     assert "later migration id" not in remedy, remedy
-    assert not re.search(r"accept[^.]*again", remedy, re.IGNORECASE), remedy
+    _assert_route(remedy, _route_of(kinds))
 
 
 def test_every_landed_migration_is_listed_in_the_clause_in_the_order_given() -> None:
@@ -189,3 +188,20 @@ def test_every_landed_migration_is_listed_in_the_clause_in_the_order_given() -> 
 
     expected = f"dependsOn: [{_DEPENDENT.value}, {second.value}, {_ROOT.value}]"
     assert expected in remedy, remedy
+
+
+_AUTHORED = sorted(
+    {frozenset(k) for k in (*_ALL_CASES, *_PAIRS) if _route_of(k) == "author"},
+    key=sorted,
+)
+
+
+@pytest.mark.parametrize("kinds", _AUTHORED, ids=lambda kinds: "+".join(sorted(kinds)))
+def test_a_hand_authored_remedy_routes_through_accept_never_to_migrate_apply(
+    kinds: frozenset[str],
+) -> None:
+    """``migrate apply`` re-checks nothing; ``propose accept`` re-judges (GHSA-fjqq)."""
+    remedy = _remedy(set(kinds), after=[_migration(_ROOT)])
+
+    assert "`theurian propose accept`" in remedy and "migrate apply" not in remedy, remedy
+    assert f"dependsOn: [{_ROOT.value}]" in remedy, remedy

@@ -483,7 +483,7 @@ proposal left it, whatever the landed operation and whatever rows the landed
 set reports, and names the landed migration that last took it below that
 level (`application/permissive_moves.py :: loosened_after`, from
 `_refuse_a_landed_overwrite`). Its error says that migration would "loosen
-what it sets", and its remedy is the redraft below, naming it in `dependsOn`.
+what it sets", and its remedy is the redraft below.
 That is the error for a loosening that adds or re-attributes no report row. One
 that would add a row the landed migrations alone do not report, a `reorders`
 row included, or would make a row the history already holds name a different
@@ -512,28 +512,36 @@ declares `dependsOn` on the declassification, is accepted
 
 For the proposal's own row, the error names the proposal's migration, the item,
 the field, both values, and the landed migrations that replay after it and
-write that field of that item, read from their operations: `upsertRevision` and
+write a refused field (below), read from their operations: `upsertRevision` and
 `createItem` write both labels, `deprecateItem` and `restoreItem` `status`, and
 `changeSensitivity` `sensitivity`
 (`application/proposal_service.py :: _refuse_a_reported_upsert`). For a landed
 migration's row, the error reads "Accepting this proposal would make the landed
-migration `<id>` move `<item>` `<field>` from `<before>` to `<after>`, undoing
+migration `<migration>` move `<item>` `<field>` from `<before>` to `<after>`, undoing
 what this proposal sets: this proposal's migration replays before it." For
-either row, the remedy is a new migration that replays after the landed
-migrations the error names, routed by every operation kind the refused
+either row, the remedy is a migration that replays after every landed
+migration in `<id>` below, routed by every operation kind the refused
 proposal carries (`_redraft_remedy`):
 
 | Every kind the refused proposal carries is | The remedy, after "Nothing has moved." |
 | :-- | :-- |
 | `createItem` or `upsertRevision` | "Draft this change again with `theurian propose`, so it replays after `<id>` only through its `dependsOn`; edit `dependsOn: [<id>]` into the drafted migration file, as the command has no option for it." |
 | one `knowledge.generateMigrationDraft` drafts | "Draft this change again with `knowledge.generateMigrationDraft`, so it replays after `<id>` only through its `dependsOn`, with `dependsOn: [<id>]` in its document." |
-| otherwise | "Author the `<kinds>` operation as a migration that replays after `<id>` only through its `dependsOn`, declaring `dependsOn: [<id>]`, and apply it with `theurian migrate apply` once a human has reviewed it." |
+| otherwise | "Edit `dependsOn: [<id>]` into this proposal's migration file in `<proposal dir>/`, so it replays after `<id>` only through its `dependsOn`, then run `theurian propose accept` again." |
 
-Each ends "Then delete `<proposal dir>/`.", `<id>` is the landed migration or
-migrations the error names, and `<kinds>` is every kind the proposal carries,
-sorted and joined with " and ", and "operation" becomes "operations" for more
-than one. A tool is named only when it drafts the whole proposal: the reader of
-one that restores and then deprecates an item, told to author only its
+The first two end "Then delete `<proposal dir>/`.", and `<id>` lists, in replay order,
+every landed migration that writes a refused field and replays after this
+proposal's migration, read as above, the refused fields being each field of a
+report row the proposal would introduce and each field it writes that a landed
+migration replaying after it leaves looser (`loosened_after`): a redraft declaring
+them all in `dependsOn` replays after the last of them (below).
+`test_accept_refuses_a_replay_order_overwrite.py::test_no_remedy_names_a_set_that_leaves_a_refused_field_writer_replaying_after`
+reads them from `migrate validate`'s `applicationOrder` behind one to three
+such writers, for a landed row's `sensitivity` and the end-state refusal's
+`sensitivity` and `status`, and asserts the remedy's `dependsOn` names each.
+A tool is named only when it drafts the whole proposal, and otherwise the
+proposal's own file is edited, so every kind it carries stays in the redraft: a
+redraft of one that restores and then deprecates an item, holding only its
 `restoreItem`, would readmit an item the proposal meant to leave withdrawn.
 Every route names `dependsOn`, whatever the landed migrations declare, because
 no id order places a fresh draft after them. A fresh draft declaring no
@@ -551,6 +559,12 @@ for two lowerings of which one item is also readmitted, reads
 `ACCEPT_LOWERING_REMEDY` itself, and asserts that each says
 `theurian propose`, "rather than accepting" and "this proposal again".
 
+The third route goes back through `accept` because `theurian migrate apply`
+re-checks nothing. `accept` runs its floors, the report check and the end-state
+check on the edited migration, so a redraft that would still leave an item
+looser is refused, not served. It keeps the staged id, which is safe because
+`dependsOn`, not the id, places it (above).
+
 `test_accept_never_introduces_a_report_row.py::test_a_withdrawals_remedy_routes_to_the_migration_draft_tool_not_the_content_path`
 refuses a staged `deprecateItem` behind a landed update that declares no
 `dependsOn`, and asserts a remedy naming `knowledge.generateMigrationDraft` and
@@ -558,8 +572,8 @@ refuses a staged `deprecateItem` behind a landed update that declares no
 "later migration id".
 `::test_a_sensitivity_raises_remedy_routes_to_a_hand_authored_migration`
 refuses a staged `changeSensitivity` raise and asserts a remedy holding
-"author", `changeSensitivity` and "migration" in that order within one
-sentence, and naming neither `theurian propose` nor `generateMigrationDraft`.
+"this proposal's migration file" and not `migrate apply`,
+and naming neither `` `theurian propose` `` nor `generateMigrationDraft`.
 `::test_the_remedy_names_dependson_when_the_landed_update_declares_it` lands
 the update with `dependsOn` and asserts a remedy naming `dependsOn` followed by
 the update's migration id, and `knowledge.generateMigrationDraft`.
@@ -595,14 +609,14 @@ second restore declaring `dependsOn` on the first, and asserts both ids in the
 error, "replays after `<first>, <second>`" and `dependsOn: [<first>, <second>]`
 in the remedy, and, with both edited into a fresh draft, exit 0 and an empty
 report after `migrate apply`.
-`::test_the_own_row_remedy_authors_every_kind_of_a_proposal_carrying_a_non_content_one`
+`::test_the_own_row_remedy_keeps_every_kind_of_a_proposal_carrying_a_non_content_one`
 appends a `changeOwner` to the refused proposal's staged document and asserts
 exit 1, an error naming the proposal's and the restore's migration ids, and a
-remedy holding "Author the changeOwner and createItem and upsertRevision
-operations as a migration" and not `theurian propose`.
+remedy holding "this proposal's migration file in `<proposal dir>/`" and not
+`` `theurian propose` ``.
 `test_accept_never_introduces_a_report_row.py::test_a_withdrawal_that_restores_first_is_refused_when_it_would_take_over_an_update_row`
 asserts that a proposal restoring then deprecating an item gets a remedy naming
-`restoreItem`, `deprecateItem`, "Author the " and `theurian migrate apply`.
+this proposal's migration file and `theurian propose accept`, and no "Author the ".
 `test_redraft_remedy.py` calls `_redraft_remedy` itself, so it reads every
 route's text but neither call site:
 `test_redraft_remedy.py::test_every_pair_of_kinds_is_routed_to_a_tool_that_can_draft_all_of_it`
@@ -610,8 +624,8 @@ builds every unordered pair of the kinds in `_REFUSED_TO_CONTENT_PATH`,
 `V1_OPERATION_KINDS` and `_REFUSED_TO_CLI`, and asserts that the remedy names
 `theurian propose` exactly when both are content kinds,
 `knowledge.generateMigrationDraft` exactly when both are kinds that tool
-drafts, and `theurian migrate apply` exactly when neither holds, in which case
-it holds "Author the " and both kinds;
+drafts, and `theurian propose accept` exactly when neither holds, in which case
+it names this proposal's migration file and no "Author the ", and never `migrate apply`;
 `::test_dependson_names_every_landed_migration_whether_or_not_it_declares_one`
 asserts each route's `dependsOn` form quoted above, for every kind alone and
 the two mixed proposals, behind a root migration, a dependent one and both,
@@ -651,8 +665,9 @@ is the control.
 builds the landed-row case on an `approved`, `internal` item and asserts exit
 1, an error naming the update's migration id, the item and `status` and
 reading "from deprecated to approved", a remedy naming the update's migration
-id and not `theurian propose`, with no "accept" followed by "again" within one
-sentence, nothing moved under the proposals, migrations or knowledge
+id and neither `` `theurian propose` `` nor `migrate apply`, with no "accept"
+followed by "again" within one sentence unless it edits this proposal's own
+file, nothing moved under the proposals, migrations or knowledge
 directories, and, after `migrate apply`, the item `approved` and an empty
 report.
 `::test_a_sensitivity_raise_minted_before_a_landed_update_is_refused_and_moves_nothing`

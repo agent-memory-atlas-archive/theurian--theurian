@@ -14,6 +14,52 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 Nothing yet.
 
+## [0.5.3] - 2026-10-08
+
+### Security
+
+- **A replay-order refusal's remedy could name too few landed migrations, so
+  following it could serve the item the proposal withheld**
+  (**CRITICAL.** [GHSA-fjqq-grr7-53cc](https://github.com/theurian/theurian/security/advisories/GHSA-fjqq-grr7-53cc)).
+  In 0.5.1 and 0.5.2, when `theurian propose accept` refused a proposal that a
+  landed migration replaying after it would undo, the remedy's `dependsOn`
+  could name one landed migration (the report check's landed-row form since
+  0.5.1, the end-state check's in 0.5.2), and the report check named
+  one refused item's writers only. On a `dependsOn` chain another writer of
+  the same field could still replay after the redraft. Where no drafting tool
+  drafts the whole proposal, the remedy said to apply a hand-authored redraft
+  with `theurian migrate apply`, which re-checks nothing, so the redraft
+  landed loose and `knowledge.get` served the item at the default ceiling,
+  even one a later landed migration had raised and, on 0.5.2, a co-carried
+  item a landed migration had raised or withdrawn. On the drafting routes
+  `theurian propose accept` refused the redraft again.
+  The remedy now names every landed migration that writes a refused
+  field and replays after the proposal's
+  ([the migration format](../../docs/protocol/migrations.md#permissive-moves-are-reported-not-refused)),
+  and 0.5.3 also sends the hand-authored redraft back through
+  `theurian propose accept`, which refuses a redraft that would still leave an
+  item looser.
+
+### Changed
+
+- **BREAKING — the hand-authored redraft remedy goes back through
+  `theurian propose accept`.** Old shape, after "Nothing has moved.": "Author
+  the `<kinds>` operation as a migration that replays after `<id>` only through
+  its `dependsOn`, declaring `dependsOn: [<id>]`, and apply it with `theurian
+  migrate apply` once a human has reviewed it. Then delete `<proposal dir>/`."
+  New shape: "Edit `dependsOn: [<id>]` into this proposal's migration file in
+  `<proposal dir>/`, so it replays after `<id>` only through its `dependsOn`,
+  then run `theurian propose accept` again.", with no "Then delete": a reader
+  following it keeps the proposal and accepts it again, which re-checks it.
+  The two drafting routes are unchanged.
+- **The redraft remedy can list more ids**: `dependsOn: [D1, D2]` where it
+  listed `[D1]`, for a landed lowering D1 and raise-back D2 replaying after
+  the proposal. A consumer parsing remedies sees more ids. The report check
+  names the landed writers of every field it refuses, each field of a row the
+  proposal would introduce and each field it writes that a landed migration
+  replaying after it leaves looser, where it named those of the one row its
+  message reports; the own row's error lists the same set.
+
 ## [0.5.2] - 2026-10-06
 
 ### Security
@@ -11045,7 +11091,8 @@ error is the one reading the release notes to decide whether to upgrade.
 - Migration `contentFile` paths are rejected at both schema and runtime level if
   they escape the project root.
 
-[Unreleased]: https://github.com/theurian/theurian/compare/core-v0.5.2...main
+[Unreleased]: https://github.com/theurian/theurian/compare/core-v0.5.3...main
+[0.5.3]: https://github.com/theurian/theurian/compare/core-v0.5.2...core-v0.5.3
 [0.5.2]: https://github.com/theurian/theurian/compare/core-v0.5.1...core-v0.5.2
 [0.5.1]: https://github.com/theurian/theurian/compare/core-v0.5.0...core-v0.5.1
 [0.5.0]: https://github.com/theurian/theurian/compare/core-v0.4.0...core-v0.5.0

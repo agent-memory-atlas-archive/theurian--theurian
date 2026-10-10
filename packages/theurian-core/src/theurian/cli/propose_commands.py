@@ -408,15 +408,15 @@ def propose_accept(
     what its revision loosened, or a landed migration that replays after this
     proposal's undoes what it sets. Nor may the replay leave a ``status`` or
     ``sensitivity`` it sets looser than it left it, whatever the landed migration's
-    operation or id. The cure is a new migration that replays
-    after the landed one, routed by every operation the proposal carries: a
+    operation or id. The remedy names in ``dependsOn`` every landed migration
+    that writes a refused field and replays after this proposal's, whatever
+    they declare, routed by every operation the proposal carries: a
     fresh draft with ``theurian propose`` when all of them are content, with
     ``knowledge.generateMigrationDraft`` when all of them are operations it
-    drafts, and otherwise one migration carrying all of them, authored by hand
-    and applied with ``theurian migrate apply``; the remedy names which. It
-    also names the ``dependsOn`` the new migration needs, whatever the landed
-    one declares: a fresh draft's id need not sort after the landed one's, and
-    only ``dependsOn`` places the new migration after it. If any of
+    drafts, and otherwise that ``dependsOn`` edited into this proposal's own
+    migration file and the proposal accepted again, which checks it again. A
+    fresh draft's id need not sort after theirs, and
+    only ``dependsOn`` places a migration after them. If any of
     these refuses, the acceptance is refused and **nothing is consumed**: the proposal directory is
     left exactly as it was, so the change can be corrected and accepted rather
     than re-drafted from nothing (ADR-0027, #307).
@@ -457,7 +457,8 @@ def propose_accept(
     acceptance would add a row to the report ``theurian migrate validate``
     prints, or change which migration a row there says it undoes -- its own
     revision's, or a landed migration's undoing what this proposal sets --
-    where the fix is a new migration replaying after the landed one, or a landed
+    where the fix, a fresh draft or this proposal edited and accepted again,
+    replays after every landed migration its remedy names, or a landed
     migration set that replays with this proposal but not on its own, where the
     fix is in ``.theurian/migrations/``; 2 the id is not a ULID; 4 the
     project's knowledge state refuses the move -- this proposal was accepted

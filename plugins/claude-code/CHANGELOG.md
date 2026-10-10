@@ -35,14 +35,14 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   not accepted again, with `dependsOn: [<its id>]` edited into the new draft's
   migration file: `theurian propose` has no option for it, and only `dependsOn`
   places the new draft after that migration. For a landed migration's undo, the
-  fix is a new migration routed by everything the refused proposal carries: a
+  fix is a migration routed by everything the refused proposal carries: a
   fresh `theurian propose` when all of it is content,
   `knowledge.generateMigrationDraft` when all of it is changes that tool
-  drafts, and otherwise one migration carrying every change, authored by hand
-  and applied with `theurian migrate apply` after a human has reviewed it. The
-  `remedy` names the route and the `dependsOn` the new migration needs. Exit 1
+  drafts, and otherwise, from Core 0.5.3 (GHSA-fjqq-grr7-53cc), the refused
+  proposal itself, its migration file edited and accepted again. The
+  `remedy` names the route and the `dependsOn` it needs. Exit 1
   now reads "correct it and accept it again, or, where the `remedy` says so,
-  draft it again or author the migration it names". The command also stops
+  draft it again". The command also stops
   saying `migrate validate` does not replay: its verdict does not rest on a
   replay.
 - **`/theurian:migrate` shows the permissive-move report.** When

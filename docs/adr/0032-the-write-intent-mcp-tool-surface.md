@@ -751,18 +751,19 @@ stated beside the number so a reader can attack the key and not only the count.
 > calls `_redraft_remedy` for every unordered pair of the kinds in
 > `_REFUSED_TO_CONTENT_PATH`, `V1_OPERATION_KINDS` and `_REFUSED_TO_CLI`, and
 > asserts each of `theurian propose`, `knowledge.generateMigrationDraft` and
-> `theurian migrate apply` named exactly on its own route, the last with
-> "Author the " and both kinds; through `accept`,
+> `theurian propose accept` named exactly on its own route, the last with
+> this proposal's migration file, and `migrate apply` never; through `accept`,
 > `test_accept_never_introduces_a_report_row.py::test_a_withdrawal_that_restores_first_is_refused_when_it_would_take_over_an_update_row`
-> asserts the restore-first face's remedy naming `restoreItem`,
-> `deprecateItem`, "Author the " and `theurian migrate apply`. When a
+> asserts the restore-first face's remedy naming this proposal's migration
+> file and `theurian propose accept`, and no "Author the ". When a
 > migration the new one must replay after declared `dependsOn`, the remedy then
 > named those ids as the new one's `dependsOn`: declared by the authored
 > migration, in the `generateMigrationDraft` document, or, as
 > `theurian propose` has no option for it, edited into the drafted migration
 > file; otherwise it did not mention `dependsOn`. Since the id-order finding
 > below it names every landed migration the error names, in the same three
-> forms, whatever they declare. "Nothing has moved.", the
+> forms, whatever they declare; the GHSA-fjqq-grr7-53cc amendment below
+> supersedes which ids, and the authored form. "Nothing has moved.", the
 > step deleting the stale proposal directory, and the absence of
 > "accept … again" are unchanged. The
 > floor remedies' fresh draft after a hand-authored migration had the same
@@ -778,9 +779,9 @@ stated beside the number so a reader can attack the key and not only the count.
 > or "later migration id"; until the id-order finding it asserted no
 > `dependsOn`.
 > `::test_a_sensitivity_raises_remedy_routes_to_a_hand_authored_migration`
-> asserts, for a staged `changeSensitivity` raise, a remedy holding "author",
-> `changeSensitivity` and "migration" in that order within one sentence, and
-> naming neither `theurian propose` nor `generateMigrationDraft`.
+> asserts, for a staged `changeSensitivity` raise, a remedy holding "this
+> proposal's migration file" and not `migrate apply`, and
+> naming neither `` `theurian propose` `` nor `generateMigrationDraft`.
 > `::test_the_remedy_names_dependson_when_the_landed_update_declares_it`, with
 > the update declaring `dependsOn`, asserts a remedy naming `dependsOn`
 > followed by the update's migration id, and `knowledge.generateMigrationDraft`.
@@ -818,20 +819,20 @@ stated beside the number so a reader can attack the key and not only the count.
 > `accept`:
 > `test_redraft_remedy.py::test_dependson_names_every_landed_migration_whether_or_not_it_declares_one`
 > asserts each route's own `dependsOn` form, the authored one among them;
-> `::test_each_cli_kind_alone_is_authored_and_applied_by_a_human` asserts
-> "Author the restoreItem operation as a migration that replays after" the
-> landed id; and
+> `::test_each_cli_kind_alone_is_edited_into_its_own_file_and_accepted_again`
+> asserts "/, so it replays after" the landed id "only through its
+> `dependsOn`, then" for `restoreItem` and `changeSensitivity` alone; and
 > `test_floor_refusal_remedy.py::test_every_remedy_that_says_to_draft_again_says_to_edit_dependson_in`
 > asserts the floor remedies' `dependsOn` sentence. No test reaches the
 > `theurian propose` route through a landed migration's row. This sentence
 > also said, until later on 2026-10-03, that no test reached the own row of a
 > proposal carrying more than content;
-> `test_accept_refuses_a_reported_upsert.py::test_the_own_row_remedy_authors_every_kind_of_a_proposal_carrying_a_non_content_one`
+> `test_accept_refuses_a_reported_upsert.py::test_the_own_row_remedy_keeps_every_kind_of_a_proposal_carrying_a_non_content_one`
 > does: it appends a `changeOwner` to the staged document of a proposal
 > refused for its own row, and asserts exit 1, an error naming the proposal's
-> and the restore's migration ids, and a remedy holding "Author the
-> changeOwner and createItem and upsertRevision operations as a migration"
-> and not `theurian propose`. Measured on 2026-10-03 at the id-order fix by
+> and the restore's migration ids, and a remedy holding "this proposal's
+> migration file in `<proposal dir>/`"
+> and not `` `theurian propose` ``. Measured on 2026-10-03 at the id-order fix by
 > wrapping `_redraft_remedy` in-process over the 20 test files, 880 tests,
 > that
 > `git grep -l -E '"propose",[[:space:]]*"accept"|propose_accept|\.accept\(|"accept",' -- packages/theurian-core/tests`
@@ -883,7 +884,9 @@ stated beside the number so a reader can attack the key and not only the count.
 > covers it. `dependsOn: [X]` places a migration in a round after X's whatever
 > the ids. So every route of `_redraft_remedy` now says the new migration
 > replays after `<id>` "only through its `dependsOn`" and names
-> `dependsOn: [<every landed migration the error names>]` in its own form —
+> `dependsOn: [<every landed migration the error names>]` (the ids, and the
+> authored form, superseded by the GHSA-fjqq-grr7-53cc amendment below) in its
+> own form —
 > edited into the drafted file for `theurian propose`, in the document for
 > `knowledge.generateMigrationDraft`, declared by the authored migration — and
 > no remedy says a later id is enough. The draft-again constants lost their
@@ -1178,6 +1181,77 @@ stated beside the number so a reader can attack the key and not only the count.
 > says why, and what that means for a hand-written update. When the default
 > lowers the item, the permissive-move report names it as `lowers`
 > (`::test_an_upsert_omitting_sensitivity_lowers_what_the_create_item_set`).
+
+> **Amended by GHSA-fjqq-grr7-53cc (2026-10-08).** At all three of
+> `_redraft_remedy`'s call sites the remedy now names in `dependsOn` every
+> landed migration that writes a refused field and replays after the
+> proposal's: the own row's rule (above), extended to the landed row, which
+> named only that row's migration, and to `_refuse_a_landed_overwrite`, which
+> named only the one that took the field below the proposal's. On a
+> `dependsOn` chain a redraft depending only on the named one could replay
+> before a later writer of the field: on the hand-authored route nothing
+> re-checked it, so it landed loose and `knowledge.get` served the item at the
+> default ceiling, and through `theurian propose accept` it was refused again.
+> [The migration format](../protocol/migrations.md#permissive-moves-are-reported-not-refused)
+> states the rule. Naming only the last such writer would place the redraft in
+> the same round of the replay sort (above) as naming them all; it was
+> rejected so that the three sites share one rule. The remedy can list more
+> ids: `dependsOn: [D1, D2]` where it read `[D1]` for a landed lowering and
+> raise-back
+> (`test_accept_refuses_a_replay_order_overwrite.py::test_a_smaller_id_loosening_that_a_landed_migration_raises_back_is_refused_for_its_row`).
+> `::test_the_hand_authored_remedy_followed_literally_keeps_the_item_withheld`
+> follows the hand-authored remedy behind one to three landed writers, and
+> `::test_the_accept_routed_remedy_converges_on_the_first_redraft_of_a_deep_chain`
+> follows it for a `theurian propose` update and a
+> `knowledge.generateMigrationDraft` deprecation behind three, the first
+> redraft accepted; both assert the item withheld from `knowledge.get`. The
+> errors and the routing are unchanged. Whether the hand-authored route should
+> send its redraft through `theurian propose accept` instead is a separate
+> decision, open here. (The errors, the routing and this decision are
+> superseded below, 2026-10-09.)
+>
+> **Decided on 2026-10-09: the hand-authored route goes back through
+> `theurian propose accept`.** On the old route no `dependsOn` target was safe.
+> Naming too few writers left a later writer of the field replaying after the
+> redraft, as with a second refused item, whose writers the report check did not
+> name. Naming every later writer includes one that tightens the field, and the
+> redraft then lowered it. `dependsOn` cannot place a redraft after a lowering
+> yet before a tightening that depends on it; only the re-check closes both. The
+> remedy now says to edit the named `dependsOn` into this proposal's own
+> migration file and run `theurian propose accept` again, and the report check
+> names, in its remedy and in the own row's error, the landed writers of every
+> field it refuses, not of the reported row's alone, which supersedes the own
+> row's "that field of that item" above. The descriptions above of tests this
+> changed were corrected in place to their bodies. Measured on 2026-10-09 by
+> scratch runs outside the suite; "served" means `knowledge.get` returns the
+> item at the default ceiling, "withheld" that it refuses:
+>
+> | Shape | 0.5.2's remedy followed literally (`migrate apply`) | Every later landed writer named, followed literally (an intermediate state of this fix, never released) | Through `theurian propose accept` (0.5.3) |
+> | :-- | :-- | :-- | :-- |
+> | Two items refused, the second's later writer unnamed | the second item ends `internal`, **served**; `permissiveMoves` `[]` with the staged id, one `reorders` row with a fresh id | the same: the report check still named one item's writers | the remedy names both items' writers; the re-accept exits 0; both end `confidential`, withheld |
+> | A later landed migration tightens the field beyond the proposal | staged id: withheld; fresh id: ends `internal`, **served**, `[]` | staged id: ends `internal`, **served**, one `reorders` row; fresh id: **served**, `[]` | the re-accept is refused by the lowering floor ("would lower the sensitivity of …"); the item stays `confidential`, withheld |
+> | The redraft restates a co-carried item's older label after a landed raise of it | the co-carried item ends `internal`, **served**; `[]` with a fresh id, one `reorders` row with the staged id | the same | the re-accept is refused by the lowering floor; the co-carried item stays `confidential`, withheld, and the other at its landed label, as nothing moved |
+> | The redraft restores a co-carried item after a landed `deprecateItem` of it | the co-carried item ends `approved`, **served**; `[]` with a fresh id | not measured | the re-accept is refused by the readmission floor ("would readmit …"); the co-carried item stays `deprecated`, withheld, and the other at its landed label, as nothing moved |
+>
+> On 0.5.1 the first row, and the second's fresh id, are served as well, with
+> `[]`; the co-carried rows do not arise, as 0.5.1 accepts that proposal at its
+> first `accept` (GHSA-wwq9-p8wq-5m68).
+>
+> Behind a landed lowering, the hand-authored remedy followed through
+> `accept` on 0.5.3, which keeps the proposal's staged id:
+>
+> | Writers of the field behind the lowering | `dependsOn` the remedy names | Re-accept | Item | `knowledge.get` at the default ceiling |
+> | :-- | :-- | :-- | :-- | :-- |
+> | none | the lowering | exit 0 | `confidential` | withheld |
+> | one | the lowering and that writer | exit 0 | `confidential` | withheld |
+> | two | the lowering and both writers | exit 0 | `confidential` | withheld |
+>
+> 0.5.2's remedy followed literally served the item for one writer with the
+> staged id and for two writers with either id. Rejected: keeping
+> `migrate apply` and refining the target to skip tighteners, since the
+> tightener and co-carried shapes would still land unchecked; and no longer
+> naming tighteners, a convergence improvement on the accept route (#898), not
+> this fix.
 
 ## Context
 

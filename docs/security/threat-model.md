@@ -6711,7 +6711,7 @@ and asserts none reaches a *canonical* write is a second, narrower control: it
 reaches one level and so does not, by itself, hold the first clause — which is
 why the facade above is what does (ADR-0032 decision 8).
 
-#### T-28 — A content update re-asserts an existing item's governance labels, so an accepted proposal lowers its sensitivity or readmits it (Tampering / Information disclosure, High — closed in 0.5.1 at draft and `accept`; its replay-order face, GHSA-wwq9-p8wq-5m68 (Critical), closed at `accept` in 0.5.2; the merge-order race and a hand-authored migration's replay-order inversion are detected, not prevented)
+#### T-28 — A content update re-asserts an existing item's governance labels, so an accepted proposal lowers its sensitivity or readmits it (Tampering / Information disclosure, High — closed in 0.5.1 at draft and `accept`; its replay-order face, GHSA-wwq9-p8wq-5m68 (Critical), closed at `accept` in 0.5.2; its redraft-remedy face, GHSA-fjqq-grr7-53cc (Critical), closed in 0.5.3; the merge-order race and a hand-authored migration's replay-order inversion are detected, not prevented)
 
 Class: **a proposal moves a gate label input in the permissive direction** —
 `status` from non-surfaceable to surfaceable, or `sensitivity` to a lower class.
@@ -6769,7 +6769,7 @@ no refusal and no row. The entry stays High after 0.5.2 because `accept`
 refuses that face, and a hand-authored migration, which runs no `accept`, is
 residual 5, detected, not prevented.
 
-**Controls (0.5.1 and 0.5.2)**, each symbol in `application/proposal_service.py` unless
+**Controls (0.5.1, 0.5.2 and 0.5.3)**, each symbol in `application/proposal_service.py` unless
 another module is named:
 
 1. **Inheritance at draft.** For an item the drafter's lookup returns, an
@@ -6828,9 +6828,19 @@ another module is named:
    refuse a proposal that leaves a held row as it is
    (`proposal_service.py :: _refuse_a_landed_overwrite`;
    `test_accept_never_introduces_a_report_row.py::test_a_stale_withdrawal_minted_before_a_landed_reapproval_is_refused`).
-   The remedy is a new migration that replays after the
-   landed one, routed by every operation kind the refused proposal carries
-   (`proposal_service.py :: _redraft_remedy`).
+   The remedy names in `dependsOn` every landed migration
+   that writes a refused field and replays after the proposal's, routed by
+   every operation kind the refused proposal carries
+   (`proposal_service.py :: _redraft_remedy`): a fresh draft when one tool
+   drafts all of them, otherwise this proposal's own migration file, edited
+   and accepted again, so `accept` re-checks it. GHSA-fjqq-grr7-53cc: 0.5.1 and
+   0.5.2 could name too few of the landed writers of a refused field, and sent a
+   redraft no tool drafts whole to `theurian migrate apply`, which re-checks
+   nothing; followed literally, it could leave an item served at the default
+   ceiling, including one a later landed migration had raised beyond the
+   proposal and, on 0.5.2, another item the proposal carries that a landed
+   migration had raised or withdrawn. 0.5.3 names every writer of every refused
+   field and sends that redraft back through `accept`.
 
 **What holds it** is recorded test by test, each described from its body, in
 ADR-0032's amendment (its *What holds it* and the paragraphs on the floors,
@@ -6864,7 +6874,8 @@ the same call for an absent id. The item is in the caller's view, the
 population ADR-0032 decision 6's bind leaves out, and the amendment records
 it there.
 
-**Residuals.** All but the tenth are open in 0.5.2.
+**Residuals.** All but the tenth are open in 0.5.3, the eleventh new in it:
+0.5.3's remedy is what sends a hand-authored redraft back to `accept`'s floors.
 
 1. **The floors compare at `accept` time only.** Nothing compares labels when
    a pull request merges or when `migrate apply` runs.
@@ -6926,6 +6937,23 @@ it there.
     proposal's: it asserts exit 1, an error naming the undoing migration, and
     nothing moved, in control 5's words for the smaller ids and the end-state
     refusal's for the larger.
+11. **A hand-authored redraft can be refused again with a remedy that does not
+    fit it.** The replay-order remedy can name a landed migration setting the field
+    tighter than the proposal, or leave unnamed one that has raised or
+    withdrawn another item the proposal carries. The lowering or readmission
+    floor then refuses, correctly: nothing moves, so every item keeps its
+    landed label, and the one the refusal names is withheld in each shape
+    measured. It prints the content path's remedy
+    (`application/item_labels.py :: ACCEPT_LOWERING_REMEDY`, `:: DRAFT_AGAIN_CLAUSE`,
+    `:: ACCEPT_READMISSION_REMEDY`): a lowering or readmission, then "draft the
+    update again with `theurian propose` rather than accepting this proposal
+    again", wrong for a proposal that tool cannot draft. For the other item,
+    removing its operation from the proposal's migration file and accepting
+    again works (measured on 0.5.2 and 0.5.3) and is printed nowhere; for the
+    tighter migration no cure was measured. A refusal, not a disclosure. These
+    remedies have assumed a `theurian propose` update since 0.5.1; tracked on
+    its own issue, filed at publication, to be fixed next. Not naming a tighter
+    migration at all is [#898](https://github.com/theurian/theurian/issues/898).
 
 **A known cost, not a residual of the fix.** There is no way to acknowledge a
 row. A history that already holds a reported upsert, the original defect's
@@ -7920,7 +7948,7 @@ fix.
 | T-25 | An MCP error response names the operator's resolved filesystem layout | I | High | Closed in 0.2.0 — GHSA-923w-f36f-jcfq. Constant refusals interpolating nothing across both tool boundaries, executable cures from fixed vocabulary; pinned by the raise-site population test, the no-resolved-form response sweep and the executable-cure ratchet |
 | T-26 | A canonical read materialises a withheld item's body before the gate, so a refusal's timing carries the body's size | I | High | Closed in 0.2.3 — bodyless `get_item_metadata`/`get_item_exact_metadata` gate the three read paths (`knowledge.get`, `_relation_is_visible`, `_may_surface`) on the pointer row, a body read only after a row clears the gate (GHSA-3f65 preserved). ADR-0032's write-intent surface adds a fourth consumer — `proposeChange`'s caller-scoped lookup (`current_revision`, renamed `current_item` in 0.5.1) — also body-free (`get_item_metadata`), closed on the write path at slice B4 (0.3.0) with a content-independent ~9 µs existence residual ~155× below the same floor. Size-independent **by construction**: `_ITEM_METADATA_SQL` projects only `knowledge_items` columns and materialises no body, pinned bidirectionally by the zero-body-read counters (`test_pre_gate_body_materialization.py`) and the explicit-column projection fact test (`test_gate_call_sites.py`, RED on a `SELECT *` or a revisions join — closing the counters' method-name-keyed blind spot). Corroborated out of band: refusal identical at 256 B and 8 MiB, ~175× below TB-1's 1.40 ms floor (work log 2026-09-16-t26-timing). A canonical-store body-materialisation channel, distinct from T-17a (derived-index statistics) and T-22 (a per-row count term, #338) |
 | T-27 | A distributed OKF bundle holds knowledge this deployment has since withdrawn | I | High | Accepted residual, recorded ([ADR-0037](../adr/0037-okf-is-the-knowledge-layer-interchange.md) *What this does not close* item 1). Four controls, three of them operator-side — the bundle is Index-class, `theurian_bundle_digest` makes staleness detectable by regenerate-and-compare, and the shipped guidance is regenerate-never-edit — and **one that travels**: the manifest's mandatory fixed-text holder notice. Export-side surface recorded in the entry: no bundle file carries SEC-15's safety triple (unowned); a body's rendered sections are not authenticated against the front matter ([#814](https://github.com/theurian/theurian/issues/814)); containment is at or under the canonical export target, with ancestor links followed and a dangling one's chain created — bounded to name occupation — and the check-to-use component race left with [#577](https://github.com/theurian/theurian/issues/577). The concurrent-merge face is closed by the atomic publish, not accepted |
-| T-28 | A content update re-asserts an existing item's governance labels, so an accepted proposal lowers its sensitivity or readmits it | T/I | High | Closed in 0.5.1 at draft and `accept` — GHSA-v2qg-23fc-7fqp; the replay-order face closed at `accept` in 0.5.2 — GHSA-wwq9-p8wq-5m68. Omitted labels inherit the item's own; a lower sensitivity and a retired item are refused at draft and by two `accept` floors comparing replayed state; `accept` never introduces or re-attributes a `permissiveMoves` row, and refuses a proposal the replay leaves looser than it set. The post-accept merge-order race and a hand-authored migration's replay-order inversion (`reorders`) are detected by `migrate validate`/`migrate apply`'s `permissiveMoves` and not prevented; nine open residuals and one closed, recorded in the entry |
+| T-28 | A content update re-asserts an existing item's governance labels, so an accepted proposal lowers its sensitivity or readmits it | T/I | High | Closed in 0.5.1 at draft and `accept` — GHSA-v2qg-23fc-7fqp; the replay-order face closed at `accept` in 0.5.2 — GHSA-wwq9-p8wq-5m68; the redraft-remedy face closed in 0.5.3 — GHSA-fjqq-grr7-53cc. Omitted labels inherit the item's own; a lower sensitivity and a retired item are refused at draft and by two `accept` floors comparing replayed state; `accept` never introduces or re-attributes a `permissiveMoves` row, and refuses a proposal the replay leaves looser than it set. The post-accept merge-order race and a hand-authored migration's replay-order inversion (`reorders`) are detected by `migrate validate`/`migrate apply`'s `permissiveMoves` and not prevented; ten open residuals and one closed, recorded in the entry |
 
 ## Explicitly out of scope
 

@@ -157,17 +157,16 @@ cannot approve knowledge"** rule below, not the front-matter
       a row to the report, changes which migration a row already there says
       it undoes, or only leaves what it sets looser: an update drafted before a
       landed declassification with a larger id is refused too. The fix there
-      is a new migration that replays after the landed one, routed by
-      everything the refused proposal carries: a fresh
+      is a migration that replays after every landed migration the
+      `remedy`'s `dependsOn` lists, routed by everything the refused proposal
+      carries: a fresh
       `theurian propose` when all of it is content,
       `knowledge.generateMigrationDraft` when all of it is changes that tool
-      drafts, and otherwise, as for a reclassification or a readmission, a
-      migration authored by hand and applied with `theurian migrate apply`
-      after a human has reviewed it. A proposal no single tool drafts is
-      authored whole: the new migration carries every change the refused one
-      did, not only the ones neither tool drafts. The `remedy` names the
-      route, and the `dependsOn` the new migration needs, whatever the landed
-      one declares.
+      drafts, and otherwise this proposal, with that `dependsOn` edited into its
+      own migration file and, once the user agrees, accepted again, which checks
+      it again; every change it carries stays in it. The `remedy` names the
+      route, and the `dependsOn` it needs, whatever the landed
+      migrations declare.
       **If any of that refuses, nothing is consumed**: the
       proposal directory is left exactly as it was, so the change is corrected and
       accepted rather than re-drafted from nothing (ADR-0027).
@@ -183,8 +182,7 @@ cannot approve knowledge"** rule below, not the front-matter
 
       Read the exit code before you report success. **1** means this proposal
       could not be used as it stands — correct it and accept it again, or,
-      where the `remedy` says so, draft it again or author the migration it
-      names. **4** means
+      where the `remedy` says so, draft it again. **4** means
       the project's knowledge state refuses the move: either this migration is
       already in place, or `.theurian/migrations/` does not apply *with or without
       this proposal*. On a 4 that says "with or without this proposal", the
